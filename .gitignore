@@ -1,0 +1,3 @@
+# Built program is published as a GitHub Release download instead of being committed
+*.exe
+*.pdb
