@@ -10,6 +10,8 @@ Get **PhotoPrintLayout.exe** from the [Releases](../../releases) page. It's one 
 
 > The first time, Windows may show "Windows protected your PC". Click **More info → Run anyway** (this happens with any app that isn't commercially signed).
 
+⭐ **If this helped you, please give it a star** (the ☆ Star button at the top right of this page). It's free, and it shows the tool is useful and helps others find it. Found a problem or have an idea? [Open an issue](../../issues).
+
 ## Features
 
 - **Photos per page:** 1, 2, 3, 4, 6, 8, 9, 12, 16, 20, or any columns × rows
