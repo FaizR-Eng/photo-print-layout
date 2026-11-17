@@ -33,6 +33,7 @@ Get **PhotoPrintLayout.exe** from the [Releases](../../releases) page. It's one 
 - **Printing:** the normal Windows Print dialog (copies, printer Preferences for quality/paper type), plus Print preview
 - **Adding photos:** drag & drop files or whole folders, or paste with Ctrl+V. Supports JPG/PNG/BMP/GIF/TIFF and WebP (HEIC needs Microsoft's free "HEIF Image Extensions")
 - Remembers your layout settings
+- Shows its version in the title bar. **Check for updates** (under the title) asks GitHub if a newer version exists, only when you click it
 
 **Keyboard:** `Ctrl+A` select all · `Ctrl+Z` / `Ctrl+Y` undo / redo · `Ctrl+D` duplicate · `Ctrl+S` save layout · `R` rotate (Shift+R other way) · `F` fit/fill · `+`/`−` size · `Del` remove · `←`/`→` change order · `Ctrl+O` add · `Ctrl+P` print · in free layout, arrow keys nudge 1 mm (Shift = 1 cm)
 

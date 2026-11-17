@@ -15,8 +15,8 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("Photo Print Layout")]
 [assembly: System.Reflection.AssemblyProduct("Photo Print Layout")]
-[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
 
 namespace PhotoPrintLayout
 {
@@ -255,7 +255,7 @@ namespace PhotoPrintLayout
 
         public MainForm()
         {
-            Text = "Photo Print Layout";
+            Text = "Photo Print Layout " + VersionText;
             Font = new Font("Segoe UI", 9f);
             AutoScaleMode = AutoScaleMode.None;
             using (var g = CreateGraphics()) dpi = g.DpiX / 96f;
@@ -276,6 +276,62 @@ namespace PhotoPrintLayout
         }
 
         int D(float v) { return (int)Math.Round(v * dpi); }
+
+        // ---- version & update check (contacts GitHub only when the user clicks "Check for updates")
+        const string LatestReleaseApi = "https://api.github.com/repos/FaizR-Eng/photo-print-layout/releases/latest";
+        const string ReleasesPage = "https://github.com/FaizR-Eng/photo-print-layout/releases/latest";
+
+        static Version Norm(Version v) { return new Version(v.Major, v.Minor, Math.Max(0, v.Build), Math.Max(0, v.Revision)); }
+        static Version MyVersion { get { return Norm(System.Reflection.Assembly.GetExecutingAssembly().GetName().Version); } }
+        static string Short(Version v) { return v.Build > 0 ? v.Major + "." + v.Minor + "." + v.Build : v.Major + "." + v.Minor; }
+        static string VersionText { get { return Short(MyVersion); } }
+
+        // returns the newest release version number on GitHub, e.g. "1.3.0"
+        static string FetchLatestVersion()
+        {
+            System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072;   // TLS 1.2
+            using (var wc = new System.Net.WebClient())
+            {
+                wc.Headers.Add("User-Agent", "PhotoPrintLayout-UpdateCheck");
+                wc.Headers.Add("Accept", "application/vnd.github+json");
+                string json = wc.DownloadString(LatestReleaseApi);
+                var m = System.Text.RegularExpressions.Regex.Match(json, "\"tag_name\"\\s*:\\s*\"v?([0-9][0-9.]*)\"");
+                return m.Success ? m.Groups[1].Value : null;
+            }
+        }
+
+        static bool IsNewer(string latest, Version mine)
+        {
+            Version v;
+            return latest != null && Version.TryParse(latest, out v) && Norm(v) > Norm(mine);
+        }
+
+        void CheckForUpdates(LinkLabel link)
+        {
+            link.Enabled = false;
+            Cursor = Cursors.AppStarting;
+            var ui = TaskScheduler.FromCurrentSynchronizationContext();
+            Task.Factory.StartNew(() => FetchLatestVersion()).ContinueWith(t =>
+            {
+                link.Enabled = true;
+                Cursor = Cursors.Default;
+                if (t.IsFaulted)
+                {
+                    MessageBox.Show(this, "Could not check for updates. Please check your internet connection and try again.\n\n" + t.Exception.GetBaseException().Message,
+                        Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                string latest = t.Result;
+                if (latest == null) { MessageBox.Show(this, "Could not read the latest version from GitHub.", Text); return; }
+                if (IsNewer(latest, MyVersion))
+                {
+                    var r = MessageBox.Show(this, "A new version is available: " + Short(Norm(Version.Parse(latest))) + "\nYou have: " + VersionText +
+                        "\n\nOpen the download page?", "Update available", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                    if (r == DialogResult.Yes) System.Diagnostics.Process.Start(ReleasesPage);
+                }
+                else MessageBox.Show(this, "You have the latest version (" + VersionText + ").", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }, ui);
+        }
         static double Clamp(double v, double a, double b) { return v < a ? a : (v > b ? b : v); }
 
         // ------------------------------------------------------------------ UI
@@ -320,6 +376,16 @@ namespace PhotoPrintLayout
             int W = SideW;
             side.Controls.Add(new Label { Text = "Photo Print Layout", Font = new Font("Segoe UI Semibold", 13f), AutoSize = false, Width = W, Height = D(30), ForeColor = TextCol });
             side.Controls.Add(Hint("Several photos per page — rotate, size and place each one yourself."));
+            const string checkText = "Check for updates";
+            var ver = new LinkLabel
+            {
+                Text = "Version " + VersionText + "   ·   " + checkText, AutoSize = false, Width = W, Height = D(22),
+                ForeColor = Muted, LinkColor = Accent, ActiveLinkColor = Accent, LinkBehavior = LinkBehavior.HoverUnderline, Margin = new Padding(0, 0, 0, D(2))
+            };
+            ver.LinkArea = new LinkArea(ver.Text.IndexOf(checkText), checkText.Length);
+            ver.LinkClicked += (s, e) => CheckForUpdates(ver);
+            tips.SetToolTip(ver, "Asks GitHub if a newer version exists (only when you click)");
+            side.Controls.Add(ver);
             var add = PrimaryButton("+   Add photos…");
             add.Click += (s, e) => BrowseAdd();
             side.Controls.Add(add);
