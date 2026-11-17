@@ -41,3 +41,7 @@ You don't need Visual Studio. Windows already includes the C# compiler (.NET Fra
 1. Open the `windows-app` folder
 2. Double-click `build.bat`
 3. `PhotoPrintLayout.exe` appears in the same folder
+
+## License
+
+Free to use, share and modify under the [MIT License](LICENSE).
