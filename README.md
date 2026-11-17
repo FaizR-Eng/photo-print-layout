@@ -15,10 +15,11 @@ Get **PhotoPrintLayout.exe** from the [Releases](../../releases) page. It's one 
 ## Features
 
 - **Photos per page:** 1, 2, 3, 4, 6, 8, 9, 12, 16, 20, or any columns × rows
+- **Free layout (preset "0"):** drop photos on the page and place them anywhere. Drag to move (even onto another page), drag the corner to resize, or type an exact size and position in cm. Hover a photo to see its size in cm
 - **Per-photo controls:**
   - Rotate left/right (nothing rotates automatically)
   - **Fit** (whole photo) or **Fill** (crop to fill the box)
-  - **Manual size:** drag the corner handle, type an exact width/height in mm, use a % / slider, or Ctrl + mouse wheel
+  - **Manual size:** drag the corner handle, type an exact width/height in cm, use a % / slider, or Ctrl + mouse wheel
   - **Manual position:** drag the photo inside its box
   - Drag a photo onto another box to swap places
   - Duplicate a photo, or repeat it to fill the page (e.g. passport photos)
@@ -27,7 +28,7 @@ Get **PhotoPrintLayout.exe** from the [Releases](../../releases) page. It's one 
 - **Adding photos:** drag & drop files or whole folders, or paste with Ctrl+V. Supports JPG/PNG/BMP/GIF/TIFF and WebP (HEIC needs Microsoft's free "HEIF Image Extensions")
 - Remembers your layout settings
 
-**Keyboard:** `R` rotate (Shift+R other way) · `F` fit/fill · `+`/`−` size · `Del` remove · `←`/`→` change order · `Ctrl+O` add · `Ctrl+P` print
+**Keyboard:** `R` rotate (Shift+R other way) · `F` fit/fill · `+`/`−` size · `Del` remove · `←`/`→` change order · `Ctrl+O` add · `Ctrl+P` print · in free layout, arrow keys nudge 1 mm (Shift = 1 cm)
 
 ## Project layout
 

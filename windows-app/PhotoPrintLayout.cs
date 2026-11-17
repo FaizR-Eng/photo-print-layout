@@ -15,8 +15,8 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("Photo Print Layout")]
 [assembly: System.Reflection.AssemblyProduct("Photo Print Layout")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
 
 namespace PhotoPrintLayout
 {
@@ -30,6 +30,10 @@ namespace PhotoPrintLayout
         public bool Fill;           // false = fit whole photo, true = fill box (crop)
         public double Scale = 1.0;  // manual size, 1.0 = fits/fills the box exactly
         public double Dx, Dy;       // manual position offset in mm
+        // free layout ("0"): position/size on the page in mm
+        public bool FreeSet;
+        public int FPage;
+        public double FX, FY, FW;
         public Photo Copy() { return (Photo)MemberwiseClone(); }
     }
 
@@ -185,8 +189,8 @@ namespace PhotoPrintLayout
         static readonly Color LineCol = Color.FromArgb(217, 222, 231);
         static readonly Color BtnBack = Color.FromArgb(248, 250, 252);
         static readonly Color TextCol = Color.FromArgb(31, 41, 55);
-        static readonly int[] PresetN = { 1, 2, 3, 4, 6, 8, 9, 12, 16, 20 };
-        static readonly int[,] PresetCR = { { 1, 1 }, { 1, 2 }, { 1, 3 }, { 2, 2 }, { 2, 3 }, { 2, 4 }, { 3, 3 }, { 3, 4 }, { 4, 4 }, { 4, 5 } };
+        static readonly int[] PresetN = { 0, 1, 2, 3, 4, 6, 8, 9, 12, 16, 20 };
+        static readonly int[,] PresetCR = { { 0, 0 }, { 1, 1 }, { 1, 2 }, { 1, 3 }, { 2, 2 }, { 2, 3 }, { 2, 4 }, { 3, 3 }, { 3, 4 }, { 4, 4 }, { 4, 5 } };
         static readonly string[] ImageExt = { ".jpg", ".jpeg", ".jfif", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp", ".heic", ".heif", ".avif" };
 
         readonly List<Photo> items = new List<Photo>();
@@ -198,6 +202,7 @@ namespace PhotoPrintLayout
         int cols = 2, rows = 2;
         double margin = 5, gap = 3;
         bool cut;
+        bool free;          // free layout: place photos anywhere
         float zoom = 0.6f;
         float dpi = 1f;
         bool updating;
@@ -214,6 +219,13 @@ namespace PhotoPrintLayout
         ToolStripStatusLabel lblInfo, lblZoom;
         readonly List<Button> presetButtons = new List<Button>();
         ContextMenuStrip ctx;
+        readonly Dictionary<string, ToolStripMenuItem> ctxItems = new Dictionary<string, ToolStripMenuItem>();
+        readonly ToolTip tips = new ToolTip();
+        NumericUpDown nX, nY;
+        Control rowMode, rowSlider, rowPos;
+        Button btnFillPage, btnResetAll;
+        int hoverIndex = -1;
+        double grabX, grabY;
 
         enum DragMode { None, Move, Resize }
         DragMode drag = DragMode.None;
@@ -258,6 +270,8 @@ namespace PhotoPrintLayout
             preview.MouseDown += PreviewMouseDown;
             preview.MouseMove += PreviewMouseMove;
             preview.MouseUp += PreviewMouseUp;
+            preview.MouseLeave += (s, e) => { if (hoverIndex != -1) { hoverIndex = -1; preview.Invalidate(); } };
+            preview.MouseDoubleClick += (s, e) => { if (free && e.Button == MouseButtons.Left && FreeHit(World(e.Location)) < 0) BrowseAdd(); };
             preview.KeyDown += OnPreviewKey;
             preview.Resize += (s, e) => { UpdateScroll(); preview.Invalidate(); };
             preview.DragEnter += OnDragEnter;
@@ -332,8 +346,8 @@ namespace PhotoPrintLayout
 
             // Layout
             AddHeader(side, "PHOTOS PER PAGE");
-            var grid = new TableLayoutPanel { ColumnCount = 5, RowCount = 2, Width = W, Height = D(68), Margin = new Padding(0, D(2), 0, D(4)) };
-            for (int i = 0; i < 5; i++) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+            var grid = new TableLayoutPanel { ColumnCount = 6, RowCount = 2, Width = W, Height = D(68), Margin = new Padding(0, D(2), 0, D(4)) };
+            for (int i = 0; i < 6; i++) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 6));
             grid.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
             grid.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
             for (int i = 0; i < PresetN.Length; i++)
@@ -341,6 +355,8 @@ namespace PhotoPrintLayout
                 int idx = i;
                 var b = Btn(PresetN[i].ToString(), (s, e) =>
                 {
+                    if (PresetN[idx] == 0) { EnterFree(); return; }
+                    free = false;
                     int c = PresetCR[idx, 0], r = PresetCR[idx, 1];
                     if (landscape) { cols = r; rows = c; } else { cols = c; rows = r; }
                     SyncControls();
@@ -348,10 +364,12 @@ namespace PhotoPrintLayout
                 });
                 b.Dock = DockStyle.Fill;
                 b.Margin = new Padding(D(2));
+                tips.SetToolTip(b, PresetN[i] == 0 ? "0 = Free layout: put photos anywhere and size them yourself" : PresetN[i] + " photos per page");
                 presetButtons.Add(b);
-                grid.Controls.Add(b, i % 5, i / 5);
+                grid.Controls.Add(b, i % 6, i / 6);
             }
             side.Controls.Add(grid);
+            side.Controls.Add(Hint("0 = free layout: drop photos on the page, then move and resize them freely."));
             nCols = Num(1, 12, 0, 1);
             nRows = Num(1, 12, 0, 1);
             side.Controls.Add(Row(32, new float[] { 46, 24, 6, 24 }, SmallLabel("Columns × Rows"), nCols, CenterLabel("×"), nRows));
@@ -384,35 +402,48 @@ namespace PhotoPrintLayout
             };
             rbFit.CheckedChanged += mode;
             rbFill.CheckedChanged += mode;
-            sb.Controls.Add(Row(32, null, rbFit, rbFill));
+            rowMode = Row(32, null, rbFit, rbFill);
+            sb.Controls.Add(rowMode);
 
             sb.Controls.Add(SubHeader("Size"));
             tbSize = new TrackBar { Minimum = 10, Maximum = 300, TickStyle = TickStyle.None, AutoSize = false, SmallChange = 5, LargeChange = 10, Value = 100 };
             nSize = Num(5, 2000, 0, 5);
-            sb.Controls.Add(Row(32, new float[] { 66, 34 }, tbSize, WithSuffix(nSize, "%")));
-            nWmm = Num(1, 2000, 1, 1);
-            nHmm = Num(1, 2000, 1, 1);
-            sb.Controls.Add(Row(32, new float[] { 13, 37, 13, 37 }, SmallLabel("W"), WithSuffix(nWmm, "mm"), SmallLabel("H"), WithSuffix(nHmm, "mm")));
+            rowSlider = Row(32, new float[] { 66, 34 }, tbSize, WithSuffix(nSize, "%"));
+            sb.Controls.Add(rowSlider);
+            nWmm = Num(0.3m, 200, 1, 0.1m);   // shown in cm
+            nHmm = Num(0.3m, 200, 1, 0.1m);
+            sb.Controls.Add(Row(32, new float[] { 13, 37, 13, 37 }, SmallLabel("W"), WithSuffix(nWmm, "cm"), SmallLabel("H"), WithSuffix(nHmm, "cm")));
+            nX = Num(0, 200, 1, 0.1m);
+            nY = Num(0, 200, 1, 0.1m);
+            rowPos = Row(32, new float[] { 13, 37, 13, 37 }, SmallLabel("X"), WithSuffix(nX, "cm"), SmallLabel("Y"), WithSuffix(nY, "cm"));
+            tips.SetToolTip(nX, "Distance from the left edge of the paper");
+            tips.SetToolTip(nY, "Distance from the top edge of the paper");
+            sb.Controls.Add(rowPos);
+            nX.ValueChanged += (s, e) => { if (updating || sel == null || !free) return; sel.FX = (double)nX.Value * 10; ClampFree(sel); SizeChanged2(); };
+            nY.ValueChanged += (s, e) => { if (updating || sel == null || !free) return; sel.FY = (double)nY.Value * 10; ClampFree(sel); SizeChanged2(); };
             sb.Controls.Add(Row(34, null, Btn("Reset size & position", (s, e) => Act("reset"))));
             tbSize.ValueChanged += (s, e) => { if (updating || sel == null) return; sel.Scale = tbSize.Value / 100.0; SizeChanged2(); };
             nSize.ValueChanged += (s, e) => { if (updating || sel == null) return; sel.Scale = (double)nSize.Value / 100.0; SizeChanged2(); };
-            nWmm.ValueChanged += (s, e) => { if (updating || sel == null) return; SetSizeMm((double)nWmm.Value, true); };
-            nHmm.ValueChanged += (s, e) => { if (updating || sel == null) return; SetSizeMm((double)nHmm.Value, false); };
+            nWmm.ValueChanged += (s, e) => { if (updating || sel == null) return; SetSizeMm((double)nWmm.Value * 10, true); };
+            nHmm.ValueChanged += (s, e) => { if (updating || sel == null) return; SetSizeMm((double)nHmm.Value * 10, false); };
 
             sb.Controls.Add(SubHeader("Order & copies"));
             sb.Controls.Add(Row(34, null, Btn("◀  Move earlier", (s, e) => Act("prev")), Btn("Move later  ▶", (s, e) => Act("next"))));
-            sb.Controls.Add(Row(34, null, Btn("Duplicate", (s, e) => Act("dup")), Btn("Repeat to fill page", (s, e) => Act("fillpage"))));
+            btnFillPage = Btn("Repeat to fill page", (s, e) => Act("fillpage"));
+            sb.Controls.Add(Row(34, null, Btn("Duplicate", (s, e) => Act("dup")), btnFillPage));
             sb.Controls.Add(Row(34, null, Btn("✕  Remove from layout", (s, e) => Act("del"))));
             side.Controls.Add(sb);
             side.Controls.Add(Hint("On the page: drag a photo to move it inside its box, drag the blue corner square to resize it, " +
-                                   "or drag it onto another box to swap places. Ctrl + mouse wheel also resizes. Right-click for more.\n" +
+                                   "or drag it onto another box to swap places. Ctrl + mouse wheel also resizes. Right-click for more. " +
+                                   "Hover a photo to see its size in cm.\n" +
+                                   "In free layout (0) drag photos anywhere, even onto another page; arrow keys nudge 1 mm (Shift = 1 cm).\n" +
                                    "Keys: R rotate · F fit/fill · + / − size · Del remove · ← → order"));
 
             // All photos
             AddHeader(side, "ALL PHOTOS");
             side.Controls.Add(Row(34, null, Btn("Auto-rotate all", (s, e) => AllPhotos("autorot")), Btn("Reset rotation", (s, e) => AllPhotos("rot0"))));
             side.Controls.Add(Row(34, null, Btn("All: Fit", (s, e) => AllPhotos("fit")), Btn("All: Fill", (s, e) => AllPhotos("fill"))));
-            side.Controls.Add(Row(34, null, Btn("Reset all sizes", (s, e) => AllPhotos("size")), Btn("Clear all", (s, e) => AllPhotos("clear"))));
+            side.Controls.Add(Row(34, null, btnResetAll = Btn("Reset all sizes", (s, e) => AllPhotos("size")), Btn("Clear all", (s, e) => AllPhotos("clear"))));
 
             // Print
             AddHeader(side, "PRINT");
@@ -433,6 +464,10 @@ namespace PhotoPrintLayout
             AddCtx("Duplicate", "dup"); AddCtx("Repeat to fill page", "fillpage");
             ctx.Items.Add(new ToolStripSeparator());
             AddCtx("Remove", "del");
+            ctx.Opening += (s, e) =>
+            {
+                foreach (var k in new[] { "fit", "fill", "fillpage" }) ctxItems[k].Visible = !free;
+            };
         }
 
         void AddCtx(string text, string action)
@@ -440,6 +475,7 @@ namespace PhotoPrintLayout
             var mi = new ToolStripMenuItem(text);
             mi.Click += (s, e) => Act(action);
             ctx.Items.Add(mi);
+            ctxItems[action] = mi;
         }
 
         void AddHeader(Control parent, string text)
@@ -551,14 +587,16 @@ namespace PhotoPrintLayout
             SetNum(nCols, cols); SetNum(nRows, rows);
             SetNum(nMargin, margin); SetNum(nGap, gap);
             chkCut.Checked = cut;
+            nCols.Enabled = nRows.Enabled = !free;
             for (int i = 0; i < presetButtons.Count; i++)
             {
                 int c = PresetCR[i, 0], r = PresetCR[i, 1];
                 if (landscape) { int t = c; c = r; r = t; }
-                bool on = c == cols && r == rows;
+                bool on = PresetN[i] == 0 ? free : (!free && c == cols && r == rows);
                 presetButtons[i].BackColor = on ? Accent : BtnBack;
                 presetButtons[i].ForeColor = on ? Color.White : TextCol;
             }
+            btnResetAll.Text = free ? "Auto-arrange all" : "Reset all sizes";
             updating = false;
             UpdateSel();
             UpdateInfo();
@@ -567,9 +605,11 @@ namespace PhotoPrintLayout
         void UpdateInfo()
         {
             double w, h; CellSize(out w, out h);
-            int n = items.Count, p = PageCount;
-            if (n == 0) lblInfo.Text = string.Format("No photos yet — click “Add photos”.   Each box {0:0} × {1:0} mm", w, h);
-            else lblInfo.Text = string.Format("{0} photo{1}  ·  {2} page{3}  ·  each box {4:0} × {5:0} mm", n, n == 1 ? "" : "s", p, p == 1 ? "" : "s", w, h);
+            int n = items.Count, p = PrintPageCount;
+            string counts = string.Format("{0} photo{1}  ·  {2} page{3}", n, n == 1 ? "" : "s", p, p == 1 ? "" : "s");
+            if (free) lblInfo.Text = (n == 0 ? "No photos yet — click “Add photos”." : counts) + "  ·  Free layout: drag to move, drag the corner square to resize";
+            else if (n == 0) lblInfo.Text = string.Format("No photos yet — click “Add photos”.   Each box {0:0} × {1:0} mm", w, h);
+            else lblInfo.Text = counts + string.Format("  ·  each box {0:0} × {1:0} mm", w, h);
             lblZoom.Text = Math.Round(zoom * 100) + "%";
         }
 
@@ -578,18 +618,32 @@ namespace PhotoPrintLayout
             bool has = sel != null && items.Contains(sel);
             if (!has) sel = null;
             selBox.Enabled = has;
+            if (rowMode.Visible == free) rowMode.Visible = !free;
+            if (rowSlider.Visible == free) rowSlider.Visible = !free;
+            if (rowPos.Visible != free) rowPos.Visible = free;
+            btnFillPage.Enabled = !free;
             updating = true;
             if (has)
             {
-                lblSel.Text = sel.Name + "\n" + sel.W + " × " + sel.H + " px  ·  rotated " + sel.Rot + "°";
-                rbFit.Checked = !sel.Fill;
-                rbFill.Checked = sel.Fill;
-                double W, H; CellSize(out W, out H);
-                var q = GetGeo(sel, W, H);
-                SetNum(nSize, sel.Scale * 100);
-                tbSize.Value = (int)Clamp(Math.Round(sel.Scale * 100), tbSize.Minimum, tbSize.Maximum);
-                SetNum(nWmm, q.EW);
-                SetNum(nHmm, q.EH);
+                lblSel.Text = sel.Name + "\n" + sel.W + " × " + sel.H + " px  ·  rotated " + sel.Rot + "°" + (free ? "  ·  page " + (sel.FPage + 1) : "");
+                if (free)
+                {
+                    SetNum(nWmm, sel.FW / 10);
+                    SetNum(nHmm, FH(sel) / 10);
+                    SetNum(nX, sel.FX / 10);
+                    SetNum(nY, sel.FY / 10);
+                }
+                else
+                {
+                    rbFit.Checked = !sel.Fill;
+                    rbFill.Checked = sel.Fill;
+                    double W, H; CellSize(out W, out H);
+                    var q = GetGeo(sel, W, H);
+                    SetNum(nSize, sel.Scale * 100);
+                    tbSize.Value = (int)Clamp(Math.Round(sel.Scale * 100), tbSize.Minimum, tbSize.Maximum);
+                    SetNum(nWmm, q.EW / 10);
+                    SetNum(nHmm, q.EH / 10);
+                }
             }
             else
             {
@@ -675,7 +729,11 @@ namespace PhotoPrintLayout
         double PW { get { return paper == null ? 210 : (landscape ? paper.Height : paper.Width) * 0.254; } }
         double PH { get { return paper == null ? 297 : (landscape ? paper.Width : paper.Height) * 0.254; } }
         int PerPage { get { return cols * rows; } }
-        int PageCount { get { return Math.Max(1, (items.Count + PerPage - 1) / PerPage); } }
+        int FreeLastPage { get { int m = 0; foreach (var p in items) if (p.FPage > m) m = p.FPage; return m; } }
+        // pages shown on screen (free layout shows one extra empty page to drag photos onto)
+        int PageCount { get { if (free) return items.Count == 0 ? 1 : FreeLastPage + 2; return Math.Max(1, (items.Count + PerPage - 1) / PerPage); } }
+        // pages that get printed
+        int PrintPageCount { get { if (free) return items.Count == 0 ? 1 : FreeLastPage + 1; return PageCount; } }
         float Ppm { get { return zoom * 96f * dpi / 25.4f; } }
         int LabelH { get { return D(26); } }
         int GapPx { get { return D(22); } }
@@ -710,6 +768,140 @@ namespace PhotoPrintLayout
             return q;
         }
 
+        // ---- free layout helpers
+        static double FH(Photo p) { double ew, eh; EffDims(p, out ew, out eh); return p.FW * eh / ew; }
+
+        void ClampFree(Photo p)
+        {
+            double ew, eh; EffDims(p, out ew, out eh);
+            double maxW = Math.Min(PW, PH * ew / eh);
+            p.FW = Clamp(p.FW, 3, maxW);
+            p.FX = Clamp(p.FX, 0, PW - p.FW);
+            p.FY = Clamp(p.FY, 0, PH - FH(p));
+            if (p.FPage < 0) p.FPage = 0;
+        }
+
+        // default size = fits a quarter of the printable area
+        void DefaultFreeSize(Photo p)
+        {
+            double ew, eh; EffDims(p, out ew, out eh);
+            double bw = Math.Max(10, (PW - 2 * margin - gap) / 2), bh = Math.Max(10, (PH - 2 * margin - gap) / 2);
+            p.FW = ew * Math.Min(bw / ew, bh / eh);
+        }
+
+        // place photos in rows inside the margins, starting below the photos already on the last page
+        void PackFree(IList<Photo> list, bool fromStart)
+        {
+            double m = margin, pw = PW, ph = PH;
+            int page = 0; double x = m, y = m, rowH = 0;
+            if (!fromStart)
+            {
+                var others = items.Where(o => o.FreeSet && !list.Contains(o)).ToList();
+                if (others.Count > 0)
+                {
+                    page = others.Max(o => o.FPage);
+                    double bottom = 0;
+                    foreach (var o in others) if (o.FPage == page) bottom = Math.Max(bottom, o.FY + FH(o));
+                    y = Math.Max(m, bottom + gap);
+                }
+            }
+            foreach (var p in list)
+            {
+                DefaultFreeSize(p);
+                double h = FH(p);
+                if (x > m && x + p.FW > pw - m + 0.01) { x = m; y += rowH + gap; rowH = 0; }
+                if (y > m && y + h > ph - m + 0.01) { page++; x = m; y = m; rowH = 0; }
+                p.FX = x; p.FY = y; p.FPage = page; p.FreeSet = true;
+                x += p.FW + gap; rowH = Math.Max(rowH, h);
+            }
+        }
+
+        void CompactFreePages()
+        {
+            var used = items.Select(o => o.FPage).Distinct().OrderBy(v => v).ToList();
+            foreach (var p in items) p.FPage = used.IndexOf(p.FPage);
+        }
+
+        // switch to free layout; photos keep the place they had in the grid
+        void EnterFree()
+        {
+            if (!free)
+            {
+                double W, H; CellSize(out W, out H);
+                int per = PerPage;
+                for (int i = 0; i < items.Count; i++)
+                {
+                    var p = items[i];
+                    if (p.FreeSet) continue;
+                    var fit = p.Copy(); fit.Fill = false;
+                    var q = GetGeo(fit, W, H);
+                    var cell = CellRectMm(i % per);
+                    p.FW = q.EW;
+                    p.FX = cell.X + W / 2 + q.Dx - q.EW / 2;
+                    p.FY = cell.Y + H / 2 + q.Dy - q.EH / 2;
+                    p.FPage = i / per;
+                    p.FreeSet = true;
+                }
+                free = true;
+                CompactFreePages();
+            }
+            SyncControls();
+            AfterChange();
+        }
+
+        RectangleF FreeRectPx(Photo p)
+        {
+            var pr = PageRectPx(p.FPage);
+            float k = Ppm;
+            return new RectangleF(pr.X + (float)p.FX * k, pr.Y + (float)p.FY * k, (float)p.FW * k, (float)FH(p) * k);
+        }
+
+        int FreeHit(PointF wp)
+        {
+            for (int i = items.Count - 1; i >= 0; i--) if (FreeRectPx(items[i]).Contains(wp)) return i;
+            return -1;
+        }
+
+        int PageAt(PointF wp)
+        {
+            int n = PageCount;
+            for (int p = 0; p < n; p++)
+            {
+                var r = PageRectPx(p);
+                r.Inflate(0, GapPx / 2f + LabelH / 2f);
+                if (r.Contains(wp)) return p;
+            }
+            return -1;
+        }
+
+        // index of the photo under the mouse in either layout, or -1
+        int PhotoAt(Point client)
+        {
+            if (free) return FreeHit(World(client));
+            int h = HitTest(client);
+            return h < items.Count ? h : -1;
+        }
+
+        void ScaleFree(Photo p, double f)
+        {
+            double cx = p.FX + p.FW / 2, cy = p.FY + FH(p) / 2;
+            p.FW *= f;
+            p.FX = cx - p.FW / 2; p.FY = cy - FH(p) / 2;
+            ClampFree(p);
+        }
+
+        void RotateFree(Photo p, int delta)
+        {
+            double cx = p.FX + p.FW / 2, cy = p.FY + FH(p) / 2;
+            double ew, eh; EffDims(p, out ew, out eh);
+            double s = p.FW / ew;
+            p.Rot = (p.Rot + delta) % 360;
+            EffDims(p, out ew, out eh);
+            p.FW = ew * s;
+            p.FX = cx - p.FW / 2; p.FY = cy - FH(p) / 2;
+            ClampFree(p);
+        }
+
         RectangleF PageRectPx(int p)
         {
             float pw = (float)(PW * Ppm), ph = (float)(PH * Ppm);
@@ -736,6 +928,7 @@ namespace PhotoPrintLayout
 
         RectangleF VisibleImageRect(int index)
         {
+            if (free) { var fp = items[index]; return RectangleF.Intersect(FreeRectPx(fp), PageRectPx(fp.FPage)); }
             var cr = CellRectPx(index);
             double W, H; CellSize(out W, out H);
             var q = GetGeo(items[index], W, H);
@@ -779,6 +972,7 @@ namespace PhotoPrintLayout
 
         void AfterChange()
         {
+            if (free) foreach (var p in items) ClampFree(p);
             UpdateScroll();
             preview.Invalidate();
             UpdateSel();
@@ -812,6 +1006,38 @@ namespace PhotoPrintLayout
             g.Restore(st);
         }
 
+        static void DrawFree(Graphics g, Photo p, Image img, float ox, float oy, float u)
+        {
+            double ew, eh; EffDims(p, out ew, out eh);
+            double s = p.FW / ew;
+            float iw = (float)(p.W * s * u), ih = (float)(p.H * s * u);
+            var st = g.Save();
+            g.TranslateTransform(ox + (float)((p.FX + p.FW / 2) * u), oy + (float)((p.FY + FH(p) / 2) * u));
+            g.RotateTransform(p.Rot);
+            var pts = new[] { new PointF(-iw / 2, -ih / 2), new PointF(iw / 2, -ih / 2), new PointF(-iw / 2, ih / 2) };
+            using (var ia = new ImageAttributes())
+            {
+                ia.SetWrapMode(WrapMode.TileFlipXY);
+                g.DrawImage(img, pts, new RectangleF(0, 0, img.Width, img.Height), GraphicsUnit.Pixel, ia);
+            }
+            g.Restore(st);
+        }
+
+        void DrawSizeLabel(Graphics g, int index, bool showPos)
+        {
+            var p = items[index];
+            var vr = VisibleImageRect(index);
+            double wmm, hmm;
+            if (free) { wmm = p.FW; hmm = FH(p); }
+            else { wmm = vr.Width / Ppm; hmm = vr.Height / Ppm; }   // printed (visible) part
+            string t = string.Format("{0:0.0} × {1:0.0} cm", wmm / 10, hmm / 10);
+            if (showPos) t += string.Format("\nfrom edge: {0:0.0} cm left, {1:0.0} cm top", p.FX / 10, p.FY / 10);
+            var sz = g.MeasureString(t, Font);
+            var box = new RectangleF(vr.X + D(5), vr.Y + D(5), sz.Width + D(8), sz.Height + D(4));
+            using (var b = new SolidBrush(Color.FromArgb(215, 17, 24, 39))) g.FillRectangle(b, box);
+            g.DrawString(t, Font, Brushes.White, box.X + D(4), box.Y + D(2));
+        }
+
         void PreviewPaint(object s, PaintEventArgs e)
         {
             var g = e.Graphics;
@@ -821,13 +1047,14 @@ namespace PhotoPrintLayout
             var clip = e.ClipRectangle;
             clip.Offset(-preview.AutoScrollPosition.X, -preview.AutoScrollPosition.Y);
             double W, H; CellSize(out W, out H);
-            int n = PageCount, per = PerPage;
+            int n = PageCount, per = PerPage, nPrint = PrintPageCount;
             float k = Ppm;
             var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
             using (var mutedBrush = new SolidBrush(Muted))
             using (var emptyBrush = new SolidBrush(Color.FromArgb(154, 163, 178)))
             using (var shadow = new SolidBrush(Color.FromArgb(38, 0, 0, 0)))
             using (var dash = new Pen(Color.FromArgb(197, 203, 214), 1) { DashStyle = DashStyle.Dash })
+            using (var guide = new Pen(Color.FromArgb(147, 197, 253), 1) { DashStyle = DashStyle.Dot })
             using (var cutPen = new Pen(Color.FromArgb(156, 163, 175), Math.Max(1f, 0.25f * k)))
             {
                 for (int p = 0; p < n; p++)
@@ -836,7 +1063,26 @@ namespace PhotoPrintLayout
                     if (pr.Bottom < clip.Top - LabelH || pr.Top - LabelH > clip.Bottom) continue;
                     g.FillRectangle(shadow, pr.X + D(2), pr.Y + D(3), pr.Width, pr.Height);
                     g.FillRectangle(Brushes.White, pr);
-                    g.DrawString("Page " + (p + 1) + " of " + n, Font, mutedBrush, new RectangleF(pr.X, pr.Y - LabelH, pr.Width, LabelH), center);
+                    string label = (free && p >= nPrint) ? "Extra page (not printed unless you put a photo on it)" : "Page " + (p + 1) + " of " + nPrint;
+                    g.DrawString(label, Font, mutedBrush, new RectangleF(pr.X - D(150), pr.Y - LabelH, pr.Width + D(300), LabelH), center);
+                    if (free)
+                    {
+                        if (margin > 0)
+                            g.DrawRectangle(guide, pr.X + (float)margin * k, pr.Y + (float)margin * k, pr.Width - 2 * (float)margin * k, pr.Height - 2 * (float)margin * k);
+                        var st = g.Save();
+                        g.SetClip(pr, CombineMode.Intersect);
+                        bool any = false;
+                        foreach (var ph in items)
+                        {
+                            if (ph.FPage != p) continue;
+                            any = true;
+                            if (ph.Preview != null) DrawFree(g, ph, ph.Preview, pr.X, pr.Y, k);
+                            if (cut) { var r = FreeRectPx(ph); g.DrawRectangle(cutPen, r.X, r.Y, r.Width, r.Height); }
+                        }
+                        g.Restore(st);
+                        if (!any) g.DrawString(items.Count == 0 ? "Double-click or drop photos here" : "Drag a photo here, or double-click to add photos", Font, emptyBrush, pr, center);
+                        continue;
+                    }
                     for (int sl = 0; sl < per; sl++)
                     {
                         int idx = p * per + sl;
@@ -855,14 +1101,21 @@ namespace PhotoPrintLayout
                     }
                 }
             }
+            g.SmoothingMode = SmoothingMode.AntiAlias;
             int si = sel == null ? -1 : items.IndexOf(sel);
             if (si >= 0)
             {
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                var cr = CellRectPx(si);
-                using (var pen = new Pen(Accent, D(2))) g.DrawRectangle(pen, cr.X, cr.Y, cr.Width, cr.Height);
                 var vr = VisibleImageRect(si);
-                using (var pen = new Pen(Accent, 1) { DashStyle = DashStyle.Dash }) g.DrawRectangle(pen, vr.X, vr.Y, vr.Width, vr.Height);
+                if (free)
+                {
+                    using (var pen = new Pen(Accent, D(2))) g.DrawRectangle(pen, vr.X, vr.Y, vr.Width, vr.Height);
+                }
+                else
+                {
+                    var cr = CellRectPx(si);
+                    using (var pen = new Pen(Accent, D(2))) g.DrawRectangle(pen, cr.X, cr.Y, cr.Width, cr.Height);
+                    using (var pen = new Pen(Accent, 1) { DashStyle = DashStyle.Dash }) g.DrawRectangle(pen, vr.X, vr.Y, vr.Width, vr.Height);
+                }
                 var hr = HandleRect(si);
                 g.FillRectangle(Brushes.White, hr);
                 using (var pen = new Pen(Accent, D(2))) g.DrawRectangle(pen, hr.X, hr.Y, hr.Width, hr.Height);
@@ -873,6 +1126,9 @@ namespace PhotoPrintLayout
                 using (var b = new SolidBrush(Color.FromArgb(50, Accent))) g.FillRectangle(b, cr);
                 using (var pen = new Pen(Accent, D(3))) g.DrawRectangle(pen, cr.X, cr.Y, cr.Width, cr.Height);
             }
+            // size in cm: for the photo being dragged/resized, otherwise for the photo under the mouse
+            int li = (drag != DragMode.None && dragMoved) ? si : hoverIndex;
+            if (li >= 0 && li < items.Count && dropTarget < 0) DrawSizeLabel(g, li, free && drag != DragMode.None && dragMoved);
         }
 
         // --------------------------------------------------------------- mouse
@@ -890,13 +1146,35 @@ namespace PhotoPrintLayout
             {
                 int si = items.IndexOf(sel);
                 drag = DragMode.Resize;
+                dragMoved = false;
                 dragIndex = si;
                 dragStart = e.Location;
                 dragScale = sel.Scale;
-                var cr = CellRectPx(si);
-                double W, H; CellSize(out W, out H);
-                var q = GetGeo(sel, W, H);
-                dragCenter = new PointF((float)(cr.X + cr.Width / 2 + q.Dx * Ppm), (float)(cr.Y + cr.Height / 2 + q.Dy * Ppm));
+                if (!free)
+                {
+                    var cr = CellRectPx(si);
+                    double W, H; CellSize(out W, out H);
+                    var q = GetGeo(sel, W, H);
+                    dragCenter = new PointF((float)(cr.X + cr.Width / 2 + q.Dx * Ppm), (float)(cr.Y + cr.Height / 2 + q.Dy * Ppm));
+                }
+                return;
+            }
+            if (free)
+            {
+                int fh = FreeHit(wp);
+                if (fh < 0) { Select(null); return; }
+                Select(items[fh]);
+                if (e.Button == MouseButtons.Right) { ctx.Show(preview, e.Location); return; }
+                if (e.Button == MouseButtons.Left)
+                {
+                    drag = DragMode.Move;
+                    dragMoved = false;
+                    dragIndex = fh;
+                    dragStart = e.Location;
+                    var pr = PageRectPx(sel.FPage);
+                    grabX = (wp.X - pr.X) / Ppm - sel.FX;
+                    grabY = (wp.Y - pr.Y) / Ppm - sel.FY;
+                }
                 return;
             }
             int hit = HitTest(e.Location);
@@ -926,11 +1204,23 @@ namespace PhotoPrintLayout
             var wp = World(e.Location);
             if (drag == DragMode.Resize && sel != null)
             {
-                var p0 = World(dragStart);
-                double d0 = Math.Sqrt(Math.Pow(p0.X - dragCenter.X, 2) + Math.Pow(p0.Y - dragCenter.Y, 2));
-                double d1 = Math.Sqrt(Math.Pow(wp.X - dragCenter.X, 2) + Math.Pow(wp.Y - dragCenter.Y, 2));
-                if (d0 < 1) d0 = 1;
-                sel.Scale = Clamp(dragScale * d1 / d0, 0.05, 20);
+                dragMoved = true;
+                if (free)
+                {
+                    var r = FreeRectPx(sel);
+                    double ew, eh; EffDims(sel, out ew, out eh);
+                    double wmm = (wp.X - r.X) / Ppm, hmm = (wp.Y - r.Y) / Ppm;
+                    double maxW = Math.Min(PW - sel.FX, (PH - sel.FY) * ew / eh);
+                    sel.FW = Clamp(Math.Max(wmm, hmm * ew / eh), 3, Math.Max(3, maxW));
+                }
+                else
+                {
+                    var p0 = World(dragStart);
+                    double d0 = Math.Sqrt(Math.Pow(p0.X - dragCenter.X, 2) + Math.Pow(p0.Y - dragCenter.Y, 2));
+                    double d1 = Math.Sqrt(Math.Pow(wp.X - dragCenter.X, 2) + Math.Pow(wp.Y - dragCenter.Y, 2));
+                    if (d0 < 1) d0 = 1;
+                    sel.Scale = Clamp(dragScale * d1 / d0, 0.05, 20);
+                }
                 preview.Invalidate();
                 UpdateSel();
                 return;
@@ -939,6 +1229,19 @@ namespace PhotoPrintLayout
             {
                 if (!dragMoved && Math.Abs(e.X - dragStart.X) + Math.Abs(e.Y - dragStart.Y) < D(4)) return;
                 dragMoved = true;
+                if (free)
+                {
+                    int pg = PageAt(wp);
+                    if (pg >= 0 && pg != sel.FPage) { sel.FPage = pg; UpdateScroll(); }
+                    var pr = PageRectPx(sel.FPage);
+                    sel.FX = (wp.X - pr.X) / Ppm - grabX;
+                    sel.FY = (wp.Y - pr.Y) / Ppm - grabY;
+                    ClampFree(sel);
+                    preview.Cursor = Cursors.SizeAll;
+                    preview.Invalidate();
+                    UpdateSel();
+                    return;
+                }
                 int hit = HitTest(e.Location);
                 if (hit >= 0 && hit != dragIndex)
                 {
@@ -958,7 +1261,10 @@ namespace PhotoPrintLayout
                 preview.Invalidate();
                 return;
             }
+            int hov = PhotoAt(e.Location);
+            if (hov != hoverIndex) { hoverIndex = hov; preview.Invalidate(); }
             if (OnHandle(wp)) preview.Cursor = Cursors.SizeNWSE;
+            else if (free) preview.Cursor = hov >= 0 ? Cursors.SizeAll : Cursors.Default;
             else
             {
                 int h = HitTest(e.Location);
@@ -968,7 +1274,7 @@ namespace PhotoPrintLayout
 
         void PreviewMouseUp(object s, MouseEventArgs e)
         {
-            if (drag == DragMode.Move && dropTarget >= 0 && dragIndex >= 0 && dragIndex < items.Count)
+            if (!free && drag == DragMode.Move && dropTarget >= 0 && dragIndex >= 0 && dragIndex < items.Count)
             {
                 int from = dragIndex;
                 if (dropTarget >= items.Count)
@@ -984,6 +1290,7 @@ namespace PhotoPrintLayout
                     items[from] = t;
                 }
             }
+            if (free && drag != DragMode.None) CompactFreePages();
             drag = DragMode.None;
             dropTarget = -1;
             dragIndex = -1;
@@ -992,11 +1299,13 @@ namespace PhotoPrintLayout
 
         bool CtrlWheel(MouseEventArgs e)
         {
-            int hit = HitTest(e.Location);
-            if (hit >= 0 && hit < items.Count)
+            int hit = PhotoAt(e.Location);
+            if (hit >= 0)
             {
                 if (sel != items[hit]) Select(items[hit]);
-                sel.Scale = Clamp(sel.Scale * (e.Delta > 0 ? 1.05 : 1 / 1.05), 0.05, 20);
+                double f = e.Delta > 0 ? 1.05 : 1 / 1.05;
+                if (free) ScaleFree(sel, f);
+                else sel.Scale = Clamp(sel.Scale * f, 0.05, 20);
                 preview.Invalidate();
                 UpdateSel();
             }
@@ -1011,7 +1320,22 @@ namespace PhotoPrintLayout
         void OnPreviewKey(object s, KeyEventArgs e)
         {
             if (sel == null) return;
-            switch (e.KeyCode)
+            var kc = e.KeyCode;
+            if (free && (kc == Keys.Left || kc == Keys.Right || kc == Keys.Up || kc == Keys.Down))
+            {
+                double st = e.Shift ? 10 : 1;   // mm
+                if (kc == Keys.Left) sel.FX -= st;
+                if (kc == Keys.Right) sel.FX += st;
+                if (kc == Keys.Up) sel.FY -= st;
+                if (kc == Keys.Down) sel.FY += st;
+                ClampFree(sel);
+                preview.Invalidate();
+                UpdateSel();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return;
+            }
+            switch (kc)
             {
                 case Keys.R: Act(e.Shift ? "rl" : "rr"); break;
                 case Keys.F: Act(sel.Fill ? "fit" : "fill"); break;
@@ -1020,9 +1344,9 @@ namespace PhotoPrintLayout
                 case Keys.Left: Act("prev"); break;
                 case Keys.Right: Act("next"); break;
                 case Keys.Oemplus:
-                case Keys.Add: sel.Scale = Clamp(sel.Scale * 1.05, 0.05, 20); SizeChanged2(); break;
+                case Keys.Add: if (free) ScaleFree(sel, 1.05); else sel.Scale = Clamp(sel.Scale * 1.05, 0.05, 20); SizeChanged2(); break;
                 case Keys.OemMinus:
-                case Keys.Subtract: sel.Scale = Clamp(sel.Scale / 1.05, 0.05, 20); SizeChanged2(); break;
+                case Keys.Subtract: if (free) ScaleFree(sel, 1 / 1.05); else sel.Scale = Clamp(sel.Scale / 1.05, 0.05, 20); SizeChanged2(); break;
                 case Keys.Escape: Select(null); break;
                 default: return;
             }
@@ -1039,6 +1363,14 @@ namespace PhotoPrintLayout
 
         void SetSizeMm(double mm, bool width)
         {
+            if (free)
+            {
+                double fw, fh; EffDims(sel, out fw, out fh);
+                sel.FW = width ? mm : mm * fw / fh;
+                ClampFree(sel);
+                SizeChanged2();
+                return;
+            }
             double W, H; CellSize(out W, out H);
             var q = GetGeo(sel, W, H);
             double ew, eh; EffDims(sel, out ew, out eh);
@@ -1054,6 +1386,15 @@ namespace PhotoPrintLayout
             int i = items.IndexOf(sel);
             if (i < 0) return;
             var p = sel;
+            if (free && (a == "rl" || a == "rr" || a == "reset" || a == "dup" || a == "fit" || a == "fill" || a == "fillpage"))
+            {
+                if (a == "rl") RotateFree(p, 270);
+                else if (a == "rr") RotateFree(p, 90);
+                else if (a == "reset") { DefaultFreeSize(p); ClampFree(p); }
+                else if (a == "dup") { var c = p.Copy(); c.FX += 5; c.FY += 5; ClampFree(c); items.Insert(i + 1, c); sel = c; }
+                AfterChange();
+                return;
+            }
             switch (a)
             {
                 case "rl": p.Rot = (p.Rot + 270) % 360; p.Dx = p.Dy = 0; break;
@@ -1063,16 +1404,17 @@ namespace PhotoPrintLayout
                 case "reset": p.Scale = 1; p.Dx = p.Dy = 0; break;
                 case "prev": if (i > 0) { items[i] = items[i - 1]; items[i - 1] = p; } break;
                 case "next": if (i < items.Count - 1) { items[i] = items[i + 1]; items[i + 1] = p; } break;
-                case "dup": items.Insert(i + 1, p.Copy()); break;
+                case "dup": { var c = p.Copy(); c.FreeSet = false; items.Insert(i + 1, c); break; }
                 case "fillpage":
                     {
                         int n = PerPage - (i % PerPage) - 1;
-                        for (int k = 0; k < n; k++) items.Insert(i + 1, p.Copy());
+                        for (int k = 0; k < n; k++) { var c = p.Copy(); c.FreeSet = false; items.Insert(i + 1, c); }
                         break;
                     }
                 case "del":
                     items.RemoveAt(i);
                     sel = items.Count == 0 ? null : items[Math.Min(i, items.Count - 1)];
+                    if (free) CompactFreePages();
                     break;
             }
             AfterChange();
@@ -1081,6 +1423,7 @@ namespace PhotoPrintLayout
         void AllPhotos(string a)
         {
             double W, H; CellSize(out W, out H);
+            if (free) { W = PW; H = PH; }
             if (a == "clear")
             {
                 if (items.Count == 0 || MessageBox.Show(this, "Remove all photos from the layout?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
@@ -1098,6 +1441,7 @@ namespace PhotoPrintLayout
                     case "size": p.Scale = 1; p.Dx = p.Dy = 0; break;
                 }
             }
+            if (free && (a == "autorot" || a == "rot0" || a == "size")) PackFree(items.ToList(), true);
             AfterChange();
         }
 
@@ -1135,13 +1479,17 @@ namespace PhotoPrintLayout
             var res = new LoadResult[list.Count];
             Parallel.For(0, list.Count, i => { res[i] = Loader.LoadGdi(list[i], 1600); });
             var failed = new List<string>();
+            var added = new List<Photo>();
             for (int i = 0; i < list.Count; i++)
             {
                 if (res[i] == null) res[i] = Loader.LoadWic(list[i], 1600);
                 if (res[i] == null) { failed.Add(Path.GetFileName(list[i])); continue; }
-                items.Add(new Photo { Path = list[i], Name = Path.GetFileName(list[i]), Preview = res[i].Bmp, W = res[i].FullW, H = res[i].FullH });
+                var np = new Photo { Path = list[i], Name = Path.GetFileName(list[i]), Preview = res[i].Bmp, W = res[i].FullW, H = res[i].FullH };
+                items.Add(np);
+                added.Add(np);
             }
             Cursor = Cursors.Default;
+            if (free) PackFree(added, false);
             AfterChange();
             if (failed.Count > 0)
                 MessageBox.Show(this, "These files could not be opened:\n\n" + string.Join("\n", failed.Take(15)) +
@@ -1250,7 +1598,8 @@ namespace PhotoPrintLayout
             g.CompositingQuality = CompositingQuality.HighQuality;
             double W, H; CellSize(out W, out H);
             int per = PerPage;
-            for (int sl = 0; sl < per; sl++)
+            if (free) PrintFreePage(g);
+            else for (int sl = 0; sl < per; sl++)
             {
                 int idx = printPage * per + sl;
                 if (idx >= items.Count) break;
@@ -1265,7 +1614,23 @@ namespace PhotoPrintLayout
                 if (cut) using (var pen = new Pen(Color.FromArgb(150, 150, 150), 0.2f)) g.DrawRectangle(pen, cell.X, cell.Y, cell.Width, cell.Height);
             }
             printPage++;
-            e.HasMorePages = printPage < PageCount;
+            e.HasMorePages = printPage < PrintPageCount;
+        }
+
+        void PrintFreePage(Graphics g)
+        {
+            foreach (var ph in items)
+            {
+                if (ph.FPage != printPage) continue;
+                double ew, eh; EffDims(ph, out ew, out eh);
+                double s = ph.FW / ew;
+                int need = (int)Math.Ceiling(Math.Max(ph.W, ph.H) * s / 25.4 * 360);
+                var r = Loader.LoadAny(ph.Path, Math.Max(need, 64));
+                Image img = r != null ? (Image)r.Bmp : ph.Preview;
+                if (img != null) DrawFree(g, ph, img, 0, 0, 1f);
+                if (r != null) r.Bmp.Dispose();
+                if (cut) using (var pen = new Pen(Color.FromArgb(150, 150, 150), 0.2f)) g.DrawRectangle(pen, (float)ph.FX, (float)ph.FY, (float)ph.FW, (float)FH(ph));
+            }
         }
 
         // ------------------------------------------------------------ settings
@@ -1291,6 +1656,7 @@ namespace PhotoPrintLayout
                         case "paper": savedPaperName = v; break;
                         case "landscape": landscape = v == "1"; break;
                         case "cut": cut = v == "1"; break;
+                        case "free": free = v == "1"; break;
                         case "cols": if (int.TryParse(v, out iv)) cols = (int)Clamp(iv, 1, 12); break;
                         case "rows": if (int.TryParse(v, out iv)) rows = (int)Clamp(iv, 1, 12); break;
                         case "margin": if (double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out dv)) margin = Clamp(dv, 0, 50); break;
@@ -1312,6 +1678,7 @@ namespace PhotoPrintLayout
                     "paper=" + (paper != null ? paper.PaperName : ""),
                     "landscape=" + (landscape ? "1" : "0"),
                     "cut=" + (cut ? "1" : "0"),
+                    "free=" + (free ? "1" : "0"),
                     "cols=" + cols,
                     "rows=" + rows,
                     "margin=" + margin.ToString(CultureInfo.InvariantCulture),
