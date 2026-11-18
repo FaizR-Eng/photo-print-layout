@@ -15,8 +15,8 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("Photo Print Layout")]
 [assembly: System.Reflection.AssemblyProduct("Photo Print Layout")]
-[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.1.0")]
 
 namespace PhotoPrintLayout
 {
@@ -565,7 +565,7 @@ namespace PhotoPrintLayout
             // Print
             AddHeader(side, "PRINT");
             var pv = Btn("Print preview…", (s, e) => DoPreview());
-            var pr = PrimaryButton("🖨  Print…");
+            var pr = PrimaryButton("Print…");
             pr.Click += (s, e) => DoPrint();
             pr.Dock = DockStyle.Fill;
             side.Controls.Add(Row(40, new float[] { 45, 55 }, pv, pr));
@@ -620,7 +620,7 @@ namespace PhotoPrintLayout
         Label Hint(string text)
         {
             var l = new Label { Text = text, UseMnemonic = false, AutoSize = false, Width = SideW, ForeColor = Muted, Font = new Font("Segoe UI", 8.25f), Margin = new Padding(0, D(4), 0, D(4)) };
-            l.Height = TextRenderer.MeasureText(text, l.Font, new Size(SideW, 0), TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix).Height + D(4);
+            l.Height = TextRenderer.MeasureText(text, l.Font, new Size(SideW, 0), TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix).Height + D(12);
             return l;
         }
 

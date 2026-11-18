@@ -10,6 +10,8 @@ Get **PhotoPrintLayout.exe** from the [Releases](../../releases) page. It's one 
 
 > The first time, Windows may show "Windows protected your PC". Click **More info → Run anyway** (this happens with any app that isn't commercially signed).
 
+📘 **User guide:** [Photo-Print-Layout-Guide.pdf](docs/Photo-Print-Layout-Guide.pdf) (7 pages with screenshots) explains every tool and button.
+
 ⭐ **If this helped you, please give it a star** (the ☆ Star button at the top right of this page). It's free, and it shows the tool is useful and helps others find it. Found a problem or have an idea? [Open an issue](../../issues).
 
 ## Features
@@ -42,6 +44,7 @@ Get **PhotoPrintLayout.exe** from the [Releases](../../releases) page. It's one 
 | Folder | What it is |
 |---|---|
 | `windows-app/` | The Windows program: `PhotoPrintLayout.cs` (all source code), `app.ico`, `build.bat` |
+| `docs/` | The user guide PDF, and its source (`guide-source/`) |
 | `web-version/` | An earlier browser-based version (single HTML file, open it in Edge/Chrome) |
 
 ## Building the .exe yourself
