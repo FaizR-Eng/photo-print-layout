@@ -1,3 +1,19 @@
-# Built program is published as a GitHub Release download instead of being committed
+# Built programs are published as GitHub Release downloads instead of being committed
 *.exe
 *.pdb
+builds/
+
+# Local working files (not part of the shared project)
+Older versions/
+reference/
+scratch-*/
+file-ops-log.csv
+DESIGN.md
+REPORT.md
+Add-PDF-Printer.cmd
+.tools/patch_*.py
+
+# Test outputs (the scripts, samples and checklist are kept)
+test/run-*/
+test/baseline-*/
+test/shots-*/

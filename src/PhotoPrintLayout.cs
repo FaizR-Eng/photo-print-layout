@@ -8,6 +8,11 @@ using System.Drawing.Imaging;
 using System.Drawing.Printing;
 using System.Globalization;
 using System.IO;
+using System.IO.Pipes;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using System.Text;
+using System.Threading;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -15,8 +20,8 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("Photo Print Layout")]
 [assembly: System.Reflection.AssemblyProduct("Photo Print Layout")]
-[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
 
 namespace PhotoPrintLayout
 {
@@ -34,6 +39,8 @@ namespace PhotoPrintLayout
         public bool FreeSet;
         public int FPage;
         public double FX, FY, FW;
+        public string Caption;      // own caption text (captions = "My own text")
+        public int PdfPage = -1;    // page number when the picture is a page of a PDF file
         public Photo Copy() { return (Photo)MemberwiseClone(); }
     }
 
@@ -156,6 +163,112 @@ namespace PhotoPrintLayout
         }
     }
 
+    // Opens PDF pages as pictures through Windows' built-in PDF engine (Windows.Data.Pdf). No extra software.
+    static class PdfLoader
+    {
+        static bool inited, ok;
+        static System.Reflection.MethodInfo asOp, asAct, asStream;
+        static Type tFile, tDoc, tPage, tOpt, tRas;
+
+        static void Init()
+        {
+            if (inited) return;
+            inited = true;
+            try
+            {
+                var rt = System.Reflection.Assembly.Load("System.Runtime.WindowsRuntime, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
+                foreach (var m in rt.GetType("System.WindowsRuntimeSystemExtensions").GetMethods())
+                {
+                    if (m.Name != "AsTask" || m.GetParameters().Length != 1) continue;
+                    string pn = m.GetParameters()[0].ParameterType.Name;
+                    if (pn == "IAsyncOperation`1") asOp = m; else if (pn == "IAsyncAction") asAct = m;
+                }
+                foreach (var m in rt.GetType("System.IO.WindowsRuntimeStreamExtensions").GetMethods())
+                    if (m.Name == "AsStreamForRead" && m.GetParameters().Length == 1) asStream = m;
+                tFile = Type.GetType("Windows.Storage.StorageFile, Windows.Storage, ContentType=WindowsRuntime");
+                tDoc = Type.GetType("Windows.Data.Pdf.PdfDocument, Windows.Data.Pdf, ContentType=WindowsRuntime");
+                tPage = Type.GetType("Windows.Data.Pdf.PdfPage, Windows.Data.Pdf, ContentType=WindowsRuntime");
+                tOpt = Type.GetType("Windows.Data.Pdf.PdfPageRenderOptions, Windows.Data.Pdf, ContentType=WindowsRuntime");
+                tRas = Type.GetType("Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Storage.Streams, ContentType=WindowsRuntime");
+                ok = asOp != null && asAct != null && asStream != null && tFile != null && tDoc != null && tPage != null && tOpt != null && tRas != null;
+            }
+            catch { ok = false; }
+        }
+
+        static object Await(object op, Type result)
+        {
+            var t = (Task)asOp.MakeGenericMethod(result).Invoke(null, new[] { op });
+            t.Wait();
+            return t.GetType().GetProperty("Result").GetValue(t, null);
+        }
+
+        static object Open(string path)
+        {
+            var file = Await(tFile.GetMethod("GetFileFromPathAsync").Invoke(null, new object[] { Path.GetFullPath(path) }), tFile);
+            System.Reflection.MethodInfo load = null;
+            foreach (var m in tDoc.GetMethods()) if (m.Name == "LoadFromFileAsync" && m.GetParameters().Length == 1) load = m;
+            return Await(load.Invoke(null, new[] { file }), tDoc);
+        }
+
+        public static int PageCount(string path)
+        {
+            Init();
+            if (!ok) return 0;
+            try { return (int)(uint)tDoc.GetProperty("PageCount").GetValue(Open(path), null); }
+            catch { return 0; }
+        }
+
+        // renders one page so its longest side is about maxSide pixels; FullW/FullH = page size at 300 dpi
+        public static LoadResult Load(string path, int page, int maxSide)
+        {
+            Init();
+            if (!ok) return null;
+            try
+            {
+                var doc = Open(path);
+                if (page < 0 || page >= (int)(uint)tDoc.GetProperty("PageCount").GetValue(doc, null)) return null;
+                var pg = tDoc.GetMethod("GetPage").Invoke(doc, new object[] { (uint)page });
+                try
+                {
+                    var size = tPage.GetProperty("Size").GetValue(pg, null);
+                    double wDip = Convert.ToDouble(size.GetType().GetProperty("Width").GetValue(size, null));
+                    double hDip = Convert.ToDouble(size.GetType().GetProperty("Height").GetValue(size, null));
+                    int fullW = Math.Max(1, (int)Math.Round(wDip / 96 * 300)), fullH = Math.Max(1, (int)Math.Round(hDip / 96 * 300));
+                    double f = maxSide > 0 && Math.Max(fullW, fullH) > maxSide ? (double)maxSide / Math.Max(fullW, fullH) : 1;
+                    int dw = Math.Max(1, (int)Math.Round(fullW * f)), dh = Math.Max(1, (int)Math.Round(fullH * f));
+                    var opt = Activator.CreateInstance(tOpt);
+                    tOpt.GetProperty("DestinationWidth").SetValue(opt, (uint)dw, null);
+                    tOpt.GetProperty("DestinationHeight").SetValue(opt, (uint)dh, null);
+                    var ras = Activator.CreateInstance(tRas);
+                    System.Reflection.MethodInfo render = null;
+                    foreach (var m in tPage.GetMethods()) if (m.Name == "RenderToStreamAsync" && m.GetParameters().Length == 2) render = m;
+                    ((Task)asAct.Invoke(null, new[] { render.Invoke(pg, new[] { ras, opt }) })).Wait();
+                    var input = tRas.GetMethod("GetInputStreamAt").Invoke(ras, new object[] { (ulong)0 });
+                    using (var st = (Stream)asStream.Invoke(null, new[] { input }))
+                    using (var ms = new MemoryStream())
+                    {
+                        st.CopyTo(ms);
+                        ms.Position = 0;
+                        using (var img = Image.FromStream(ms))
+                        {
+                            var b = new Bitmap(dw, dh, PixelFormat.Format32bppPArgb);
+                            using (var g = Graphics.FromImage(b))
+                            {
+                                g.Clear(Color.White);
+                                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                                g.DrawImage(img, new Rectangle(0, 0, dw, dh));
+                            }
+                            return new LoadResult { Bmp = b, FullW = fullW, FullH = fullH };
+                        }
+                    }
+                }
+                finally { var d = pg as IDisposable; if (d != null) d.Dispose(); }
+            }
+            catch { return null; }
+        }
+    }
+
     class PreviewPanel : Panel
     {
         public Func<MouseEventArgs, bool> CtrlWheel;
@@ -207,12 +320,39 @@ namespace PhotoPrintLayout
         float dpi = 1f;
         bool updating;
         int printPage;
+        int printFrom, printTo = int.MaxValue;   // page range for printing (0-based, end exclusive)
+        double boxW, boxH;           // fixed photo size in mm (0 = boxes fill the page grid)
+        int guideMode;               // 0 none, 1 thin cut lines, 2 crop marks
+        int captionMode;             // 0 none, 1 file name, 2 own text
+        double captionPt = 9;
+        bool showEdge = true;        // show the printer's unprintable edge on screen
+        bool previewEdge = true;     // ... and in the Print window preview
+        double hmL, hmT, hmR, hmB;   // printer's unprintable edge (mm) for the current printer / paper / orientation
+        PrinterSettings printSettings;   // driver preferences chosen in the Print window
+        readonly List<string> recentLayouts = new List<string>(), recentPhotos = new List<string>();
+        Rectangle savedBounds;
+        bool savedMax;
+        readonly System.Collections.Concurrent.ConcurrentQueue<string> incoming = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        readonly List<string> pendingFiles = new List<string>();
+        DateTime lastIncoming;
+        ComboBox cbSize, cbGuides, cbCaptions;
+        NumericUpDown nBoxW, nBoxH, nCapPt;
+        Control rowCustomSize, rowCaptionText;
+        TextBox txtCaption;
+        Label lblMarginWarn;
+        ToolStripDropDownButton tbRecent;
+        static readonly string[] SizeNames = {
+            "Fill the page (use the grid)", "9 × 13 cm", "10 × 15 cm", "13 × 18 cm", "15 × 20 cm", "20 × 25 cm",
+            "4 × 6 in (10.2 × 15.2 cm)", "5 × 7 in (12.7 × 17.8 cm)", "8 × 10 in (20.3 × 25.4 cm)",
+            "Passport 3.5 × 4.5 cm", "2 × 2 in (US passport)", "Wallet 2.5 × 3.5 in", "Custom size…" };
+        static readonly double[,] SizeMM = {
+            { 0, 0 }, { 90, 130 }, { 100, 150 }, { 130, 180 }, { 150, 200 }, { 200, 250 },
+            { 101.6, 152.4 }, { 127, 177.8 }, { 203.2, 254 }, { 35, 45 }, { 50.8, 50.8 }, { 63.5, 88.9 }, { -1, -1 } };
 
         PreviewPanel preview;
         ComboBox cbPrinter, cbPaper;
         RadioButton rbPort, rbLand, rbFit, rbFill;
         NumericUpDown nCols, nRows, nMargin, nGap, nSize, nWmm, nHmm;
-        CheckBox chkCut;
         TrackBar tbSize;
         Label lblSel;
         Control selBox;
@@ -228,8 +368,12 @@ namespace PhotoPrintLayout
         // multi-selection: selList holds all selected photos, sel is the last one clicked ("primary")
         readonly List<Photo> selList = new List<Photo>();
         bool snapOn = true, showGrid, alignToPage;
+        bool showGaps = true;        // red gap measurements in free layout
+        double alignGap;             // exact gap (mm) for Space evenly; 0 = spread to fill
+        CheckBox chkGaps;
+        NumericUpDown nAlignGap;
         Control arrangeBox;
-        Button btnUndo, btnRedo;
+        ToolStripButton btnUndo, btnRedo;
         CheckBox chkAlignPage, chkSnap, chkGrid;
         readonly Dictionary<Photo, double[]> dragStartPos = new Dictionary<Photo, double[]>();
         bool pendingSingle;
@@ -237,7 +381,7 @@ namespace PhotoPrintLayout
         PointF marqA, marqB;
         List<Photo> marqBase = new List<Photo>();
         readonly List<double[]> guides = new List<double[]>();   // { 1 = vertical / 0 = horizontal, position mm, page }
-        class Snap { public List<Photo> Items; public int[] SelIdx; public int Primary; public bool Free; public int Cols, Rows; }
+        class Snap { public List<Photo> Items; public int[] SelIdx; public int Primary; public bool Free; public int Cols, Rows; public double BoxW, BoxH; }
         readonly List<Snap> undo = new List<Snap>(), redo = new List<Snap>();
         string lastUndoKind = "";
         DateTime lastUndoTime;
@@ -267,12 +411,26 @@ namespace PhotoPrintLayout
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             BuildUi();
             LoadSettings();
+            if (savedBounds.Width > 300 && savedBounds.Height > 300 && Screen.AllScreens.Any(sc => sc.WorkingArea.IntersectsWith(savedBounds)))
+            {
+                StartPosition = FormStartPosition.Manual;
+                Bounds = savedBounds;
+                if (savedMax) WindowState = FormWindowState.Maximized;
+            }
             FillPrinters();
             SyncControls();
             DragEnter += OnDragEnter;
             DragDrop += OnDragDrop;
             Shown += (s, e) => { FitZoom(); preview.Focus(); };
-            FormClosing += (s, e) => SaveSettings();
+            FormClosing += (s, e) =>
+            {
+                savedMax = WindowState == FormWindowState.Maximized;
+                savedBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+                SaveSettings();
+            };
+            var inTimer = new System.Windows.Forms.Timer { Interval = 150 };
+            inTimer.Tick += (s, e) => PumpIncoming();
+            inTimer.Start();
         }
 
         int D(float v) { return (int)Math.Round(v * dpi); }
@@ -369,8 +527,40 @@ namespace PhotoPrintLayout
             bFit.Click += (s, e) => FitZoom();
             status.Items.AddRange(new ToolStripItem[] { lblInfo, bOut, lblZoom, bIn, bFit });
 
+            // Toolbar: always visible, never scrolls
+            var tb = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Padding = new Padding(D(8), D(4), D(8), D(4)), BackColor = Color.White, RenderMode = ToolStripRenderMode.System, CanOverflow = true };
+            Func<string, string, EventHandler, ToolStripButton> TB = (text, tip, click) =>
+            {
+                var b = new ToolStripButton(text) { ToolTipText = tip, DisplayStyle = ToolStripItemDisplayStyle.Text, Padding = new Padding(D(6), D(3), D(6), D(3)), Margin = new Padding(D(1), 0, D(1), 0) };
+                b.Click += click;
+                return b;
+            };
+            tb.Items.Add(TB("+ Add photos", "Add photos (Ctrl+O)", (s, e) => BrowseAdd()));
+            tb.Items.Add(TB("Open layout…", "Open a layout you saved before", (s, e) => OpenLayout()));
+            tb.Items.Add(TB("Save layout…", "Save this arrangement to reprint or edit later (Ctrl+S)", (s, e) => SaveLayout()));
+            tb.Items.Add(TB("Save as PDF…", "Save the pages as a PDF file (no printer needed)", (s, e) => SaveAsPdf()));
+            tbRecent = new ToolStripDropDownButton("Recent") { ToolTipText = "Recently used layouts and photos", Padding = new Padding(D(6), D(3), D(6), D(3)) };
+            tbRecent.DropDownOpening += (s, e) => FillRecentMenu();
+            tbRecent.DropDownItems.Add("(none yet)");
+            tb.Items.Add(tbRecent);
+            tb.Items.Add(new ToolStripSeparator());
+            btnUndo = TB("↶ Undo", "Undo the last change (Ctrl+Z)", (s, e) => Undo());
+            btnRedo = TB("↷ Redo", "Redo (Ctrl+Y)", (s, e) => Redo());
+            tb.Items.Add(btnUndo);
+            tb.Items.Add(btnRedo);
+            var printBtn = PrimaryButton("Print…");
+            printBtn.Width = D(110); printBtn.Height = D(30); printBtn.Margin = new Padding(0);
+            printBtn.Click += (s, e) => DoPrint();
+            tips.SetToolTip(printBtn, "Print with a live preview (Ctrl+P)");
+            var hostPrint = new ToolStripControlHost(printBtn) { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(D(4), D(1), 0, D(1)), AutoSize = false, Size = new Size(D(110), D(30)) };
+            tb.Items.Add(hostPrint);
+            var tPrev = TB("Print preview…", "See the pages exactly as they will print", (s, e) => DoPreview());
+            tPrev.Alignment = ToolStripItemAlignment.Right;
+            tb.Items.Add(tPrev);
+
             Controls.Add(preview);
             Controls.Add(side);
+            Controls.Add(tb);
             Controls.Add(status);
 
             int W = SideW;
@@ -390,16 +580,6 @@ namespace PhotoPrintLayout
             add.Click += (s, e) => BrowseAdd();
             side.Controls.Add(add);
             side.Controls.Add(Hint("Or drag & drop photos (or a folder) here, or paste with Ctrl+V."));
-            btnUndo = Btn("↶  Undo", (s, e) => Undo());
-            btnRedo = Btn("↷  Redo", (s, e) => Redo());
-            tips.SetToolTip(btnUndo, "Undo the last change (Ctrl+Z)");
-            tips.SetToolTip(btnRedo, "Redo (Ctrl+Y)");
-            side.Controls.Add(Row(32, null, btnUndo, btnRedo));
-            var bOpen = Btn("Open layout…", (s, e) => OpenLayout());
-            var bSave = Btn("Save layout…", (s, e) => SaveLayout());
-            tips.SetToolTip(bOpen, "Open a layout you saved before");
-            tips.SetToolTip(bSave, "Save this arrangement to reprint or edit later (Ctrl+S)");
-            side.Controls.Add(Row(32, null, bOpen, bSave));
 
             // Printer & paper
             AddHeader(side, "PRINTER & PAPER");
@@ -409,6 +589,7 @@ namespace PhotoPrintLayout
             {
                 if (updating) return;
                 printerName = cbPrinter.SelectedItem as string ?? "";
+                printSettings = null;
                 FillPapers();
                 FitZoom();
             };
@@ -450,6 +631,7 @@ namespace PhotoPrintLayout
                     if (PresetN[idx] == 0) { EnterFree(); return; }
                     PushUndo("");
                     free = false;
+                    boxW = boxH = 0;
                     int c = PresetCR[idx, 0], r = PresetCR[idx, 1];
                     if (landscape) { cols = r; rows = c; } else { cols = c; rows = r; }
                     SyncControls();
@@ -463,6 +645,17 @@ namespace PhotoPrintLayout
             }
             side.Controls.Add(grid);
             side.Controls.Add(Hint("0 = free layout: drop photos on the page, then move and resize them freely."));
+            cbSize = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, DropDownWidth = D(260) };
+            foreach (var nm in SizeNames) cbSize.Items.Add(nm);
+            side.Controls.Add(Row(32, new float[] { 32, 68 }, SmallLabel("Photo size"), cbSize));
+            tips.SetToolTip(cbSize, "Print every photo at an exact size (as many as fit per page). In free layout it sizes the selected photos.");
+            nBoxW = Num(0.5m, 100, 1, 0.1m);
+            nBoxH = Num(0.5m, 100, 1, 0.1m);
+            rowCustomSize = Row(32, new float[] { 13, 37, 13, 37 }, SmallLabel("W"), WithSuffix(nBoxW, "cm"), SmallLabel("H"), WithSuffix(nBoxH, "cm"));
+            side.Controls.Add(rowCustomSize);
+            cbSize.SelectedIndexChanged += (s, e) => { if (updating) return; rowCustomSize.Visible = cbSize.SelectedIndex == SizeNames.Length - 1; ApplySizeChoice(); };
+            nBoxW.ValueChanged += (s, e) => { if (updating) return; if (cbSize.SelectedIndex == SizeNames.Length - 1) ApplySizeChoice(); };
+            nBoxH.ValueChanged += (s, e) => { if (updating) return; if (cbSize.SelectedIndex == SizeNames.Length - 1) ApplySizeChoice(); };
             nCols = Num(1, 12, 0, 1);
             nRows = Num(1, 12, 0, 1);
             side.Controls.Add(Row(32, new float[] { 46, 24, 6, 24 }, SmallLabel("Columns × Rows"), nCols, CenterLabel("×"), nRows));
@@ -470,13 +663,25 @@ namespace PhotoPrintLayout
             nGap = Num(0, 50, 1, 0.5m);
             side.Controls.Add(Row(32, new float[] { 70, 30 }, SmallLabel("Page margin (mm)"), nMargin));
             side.Controls.Add(Row(32, new float[] { 70, 30 }, SmallLabel("Gap between photos (mm)"), nGap));
-            chkCut = new CheckBox { Text = "Print thin cutting lines", AutoSize = false, Width = W, Height = D(26) };
-            side.Controls.Add(chkCut);
+            lblMarginWarn = Hint("This printer can't print the outer 0.0 mm of this paper. Photos closer to the edge will be cut.");
+            lblMarginWarn.ForeColor = Color.FromArgb(180, 83, 9);
+            lblMarginWarn.Visible = false;
+            side.Controls.Add(lblMarginWarn);
+            cbGuides = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+            cbGuides.Items.AddRange(new object[] { "None", "Thin cut lines", "Crop marks (corners)" });
+            side.Controls.Add(Row(32, new float[] { 40, 60 }, SmallLabel("Cut guides"), cbGuides));
+            cbCaptions = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+            cbCaptions.Items.AddRange(new object[] { "None", "File name", "My own text" });
+            side.Controls.Add(Row(32, new float[] { 40, 60 }, SmallLabel("Captions"), cbCaptions));
+            nCapPt = Num(5, 36, 0, 1);
+            side.Controls.Add(Row(32, new float[] { 70, 30 }, SmallLabel("Caption text size (pt)"), nCapPt));
+            cbGuides.SelectedIndexChanged += (s, e) => { if (updating) return; guideMode = cbGuides.SelectedIndex; cut = guideMode == 1; preview.Invalidate(); };
+            cbCaptions.SelectedIndexChanged += (s, e) => { if (updating) return; PushUndo(""); captionMode = cbCaptions.SelectedIndex; SyncControls(); AfterChange(); };
+            nCapPt.ValueChanged += (s, e) => { if (updating) return; captionPt = (double)nCapPt.Value; AfterChange(); };
             nCols.ValueChanged += (s, e) => { if (updating) return; PushUndo("cols"); cols = (int)nCols.Value; SyncControls(); AfterChange(); };
             nRows.ValueChanged += (s, e) => { if (updating) return; PushUndo("rows"); rows = (int)nRows.Value; SyncControls(); AfterChange(); };
-            nMargin.ValueChanged += (s, e) => { if (updating) return; margin = (double)nMargin.Value; AfterChange(); };
+            nMargin.ValueChanged += (s, e) => { if (updating) return; margin = (double)nMargin.Value; UpdateMarginWarning(); AfterChange(); };
             nGap.ValueChanged += (s, e) => { if (updating) return; gap = (double)nGap.Value; AfterChange(); };
-            chkCut.CheckedChanged += (s, e) => { if (updating) return; cut = chkCut.Checked; preview.Invalidate(); };
 
             // Selected photo
             AddHeader(side, "SELECTED PHOTO");
@@ -512,6 +717,17 @@ namespace PhotoPrintLayout
             tips.SetToolTip(nX, "Distance from the left edge of the paper");
             tips.SetToolTip(nY, "Distance from the top edge of the paper");
             sb.Controls.Add(rowPos);
+            txtCaption = new TextBox();
+            rowCaptionText = Row(30, new float[] { 30, 70 }, SmallLabel("Caption"), txtCaption);
+            sb.Controls.Add(rowCaptionText);
+            txtCaption.TextChanged += (s, e) =>
+            {
+                if (updating || sel == null) return;
+                PushUndo("caption");
+                string t = txtCaption.Text.Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
+                foreach (var ph in Targets()) ph.Caption = t;
+                preview.Invalidate();
+            };
             nX.ValueChanged += (s, e) => { if (updating || sel == null || !free) return; MoveSelTo((double)nX.Value * 10, true); };
             nY.ValueChanged += (s, e) => { if (updating || sel == null || !free) return; MoveSelTo((double)nY.Value * 10, false); };
             sb.Controls.Add(Row(34, null, Btn("Reset size & position", (s, e) => Act("reset"))));
@@ -541,6 +757,10 @@ namespace PhotoPrintLayout
             ab.Controls.Add(Row(32, null, AB("Top", "top", "Line up the top edges"), AB("Middle", "vcenter", "Line up the middles (up–down)"), AB("Bottom", "bottom", "Line up the bottom edges")));
             ab.Controls.Add(SubHeader("Spacing & size"));
             ab.Controls.Add(Row(32, null, AB("Space evenly ↔", "disth", "Equal gaps left–right (3 or more photos, or 2+ with page margins)"), AB("Space evenly ↕", "distv", "Equal gaps top–bottom (3 or more photos, or 2+ with page margins)")));
+            nAlignGap = Num(0, 200, 1, 0.5m);
+            ab.Controls.Add(Row(32, new float[] { 70, 30 }, SmallLabel("Exact gap (mm, 0 = spread out)"), nAlignGap));
+            tips.SetToolTip(nAlignGap, "With a number here, Space evenly puts the photos exactly this far apart, starting from the first one. 0 = spread them over the space they use.");
+            nAlignGap.ValueChanged += (s, e) => { if (updating) return; alignGap = (double)nAlignGap.Value; };
             ab.Controls.Add(Row(32, null, AB("Same width", "samew", "Make the selected photos as wide as the last one you clicked"), AB("Same height", "sameh", "Make the selected photos as tall as the last one you clicked")));
             ab.Controls.Add(Row(32, null, AB("Center on page", "centerpage", "Move the selection to the middle of the page")));
             chkAlignPage = new CheckBox { Text = "Align to page margins (not to each other)", AutoSize = false, Width = W, Height = D(24) };
@@ -552,8 +772,12 @@ namespace PhotoPrintLayout
             ab.Controls.Add(chkAlignPage);
             ab.Controls.Add(chkSnap);
             ab.Controls.Add(chkGrid);
+            chkGaps = new CheckBox { Text = "Show gaps between photos (mm)", Checked = true, AutoSize = false, Width = W, Height = D(24) };
+            chkGaps.CheckedChanged += (s, e) => { showGaps = chkGaps.Checked; preview.Invalidate(); };
+            ab.Controls.Add(chkGaps);
             ab.Controls.Add(Hint("Select several photos with Ctrl+click or Shift+click, or drag a box around them from an empty spot. Ctrl+A selects all. " +
-                                 "With one photo selected, Align uses the page margins. Hold Alt while dragging to turn snapping off."));
+                                 "With one photo selected, Align uses the page margins. Hold Alt while dragging to turn snapping off. " +
+                                 "Red lines show the gap to the nearest photo (and, with one photo selected, to the paper edges) in mm."));
             side.Controls.Add(ab);
 
             // All photos
@@ -562,15 +786,7 @@ namespace PhotoPrintLayout
             side.Controls.Add(Row(34, null, Btn("All: Fit", (s, e) => AllPhotos("fit")), Btn("All: Fill", (s, e) => AllPhotos("fill"))));
             side.Controls.Add(Row(34, null, btnResetAll = Btn("Reset all sizes", (s, e) => AllPhotos("size")), Btn("Clear all", (s, e) => AllPhotos("clear"))));
 
-            // Print
-            AddHeader(side, "PRINT");
-            var pv = Btn("Print preview…", (s, e) => DoPreview());
-            var pr = PrimaryButton("Print…");
-            pr.Click += (s, e) => DoPrint();
-            pr.Dock = DockStyle.Fill;
-            side.Controls.Add(Row(40, new float[] { 45, 55 }, pv, pr));
-            side.Controls.Add(Hint("In the Print window you can pick copies and use Preferences for quality and paper type. " +
-                                   "The paper size is taken from this app."));
+            side.Controls.Add(Hint("Print and Print preview are in the toolbar at the top (Ctrl+P)."));
 
             // Context menu
             ctx = new ContextMenuStrip();
@@ -717,13 +933,31 @@ namespace PhotoPrintLayout
             rbLand.Checked = landscape;
             SetNum(nCols, cols); SetNum(nRows, rows);
             SetNum(nMargin, margin); SetNum(nGap, gap);
-            chkCut.Checked = cut;
-            nCols.Enabled = nRows.Enabled = !free;
+            cbGuides.SelectedIndex = guideMode;
+            cbCaptions.SelectedIndex = captionMode;
+            SetNum(nCapPt, captionPt);
+            chkGaps.Checked = showGaps;
+            SetNum(nAlignGap, alignGap);
+            if (!free)
+            {
+                int si = 0;
+                if (boxW > 0)
+                {
+                    si = SizeNames.Length - 1;
+                    for (int i = 1; i < SizeNames.Length - 1; i++)
+                        if ((Math.Abs(SizeMM[i, 0] - boxW) < 0.01 && Math.Abs(SizeMM[i, 1] - boxH) < 0.01) || (Math.Abs(SizeMM[i, 0] - boxH) < 0.01 && Math.Abs(SizeMM[i, 1] - boxW) < 0.01)) { si = i; break; }
+                    SetNum(nBoxW, boxW / 10); SetNum(nBoxH, boxH / 10);
+                }
+                cbSize.SelectedIndex = si;
+            }
+            else if (cbSize.SelectedIndex < 0) cbSize.SelectedIndex = 0;
+            rowCustomSize.Visible = cbSize.SelectedIndex == SizeNames.Length - 1;
+            nCols.Enabled = nRows.Enabled = !free && boxW <= 0;
             for (int i = 0; i < presetButtons.Count; i++)
             {
                 int c = PresetCR[i, 0], r = PresetCR[i, 1];
                 if (landscape) { int t = c; c = r; r = t; }
-                bool on = PresetN[i] == 0 ? free : (!free && c == cols && r == rows);
+                bool on = PresetN[i] == 0 ? free : (!free && boxW <= 0 && c == cols && r == rows);
                 presetButtons[i].BackColor = on ? Accent : BtnBack;
                 presetButtons[i].ForeColor = on ? Color.White : TextCol;
             }
@@ -740,6 +974,7 @@ namespace PhotoPrintLayout
             string counts = string.Format("{0} photo{1}  ·  {2} page{3}", n, n == 1 ? "" : "s", p, p == 1 ? "" : "s");
             if (free) lblInfo.Text = (n == 0 ? "No photos yet — click “Add photos”." : counts) + "  ·  Free layout: drag to move, drag the corner square to resize";
             else if (n == 0) lblInfo.Text = string.Format("No photos yet — click “Add photos”.   Each box {0:0} × {1:0} mm", w, h);
+            else if (boxW > 0) lblInfo.Text = counts + string.Format("  ·  {0} per page, each photo {1:0.#} × {2:0.#} cm", PerPage, w / 10, h / 10);
             else lblInfo.Text = counts + string.Format("  ·  each box {0:0} × {1:0} mm", w, h);
             lblZoom.Text = Math.Round(zoom * 100) + "%";
         }
@@ -758,6 +993,7 @@ namespace PhotoPrintLayout
             if (rowPos.Visible != free) rowPos.Visible = free;
             if (arrangeBox.Visible != free) arrangeBox.Visible = free;
             btnFillPage.Enabled = !free && n == 1;
+            if (rowCaptionText.Visible != (captionMode == 2)) rowCaptionText.Visible = captionMode == 2;
             btnUndo.Enabled = undo.Count > 0;
             btnRedo.Enabled = redo.Count > 0;
             updating = true;
@@ -767,6 +1003,7 @@ namespace PhotoPrintLayout
                     lblSel.Text = n + " photos selected — changes apply to all\nNumbers show the last one clicked: " + sel.Name;
                 else
                     lblSel.Text = sel.Name + "\n" + sel.W + " × " + sel.H + " px  ·  rotated " + sel.Rot + "°" + (free ? "  ·  page " + (sel.FPage + 1) : "");
+                txtCaption.Text = sel.Caption ?? "";
                 if (free)
                 {
                     SetNum(nWmm, sel.FW / 10);
@@ -869,7 +1106,7 @@ namespace PhotoPrintLayout
         // ------------------------------------------------------------ geometry
         double PW { get { return paper == null ? 210 : (landscape ? paper.Height : paper.Width) * 0.254; } }
         double PH { get { return paper == null ? 297 : (landscape ? paper.Width : paper.Height) * 0.254; } }
-        int PerPage { get { return cols * rows; } }
+        int PerPage { get { int gc, gr; double cw, ch, ox, oy; GridMetrics(out gc, out gr, out cw, out ch, out ox, out oy); return gc * gr; } }
         int FreeLastPage { get { int m = 0; foreach (var p in items) if (p.FPage > m) m = p.FPage; return m; } }
         // pages shown on screen (free layout shows one extra empty page to drag photos onto)
         int PageCount { get { if (free) return items.Count == 0 ? 1 : FreeLastPage + 2; return Math.Max(1, (items.Count + PerPage - 1) / PerPage); } }
@@ -880,12 +1117,40 @@ namespace PhotoPrintLayout
         int GapPx { get { return D(22); } }
         int Pad { get { return D(20); } }
 
+        // height of the caption band under each photo (mm)
+        double CapH { get { return captionMode == 0 ? 0 : captionPt * 0.3528 * 1.6; } }
+
+        static int FitCount(double avail, double size, double gap) { return size <= 0 ? 0 : (int)Math.Floor((avail + gap + 1e-6) / (size + gap)); }
+
+        // grid geometry in mm: columns, rows, full cell size (photo + caption band), top-left of the first cell
+        void GridMetrics(out int gc, out int gr, out double cw, out double ch, out double ox, out double oy)
+        {
+            double cap = CapH;
+            if (boxW > 0 && boxH > 0)
+            {
+                double aw = PW - 2 * margin, ah = PH - 2 * margin;
+                int c1 = FitCount(aw, boxW, gap), r1 = FitCount(ah, boxH + cap, gap);
+                int c2 = FitCount(aw, boxH, gap), r2 = FitCount(ah, boxW + cap, gap);
+                if (c2 * r2 > c1 * r1) { cw = boxH; ch = boxW + cap; gc = c2; gr = r2; }
+                else { cw = boxW; ch = boxH + cap; gc = c1; gr = r1; }
+                gc = Math.Max(1, gc); gr = Math.Max(1, gr);
+                ox = (PW - (gc * cw + (gc - 1) * gap)) / 2;
+                oy = (PH - (gr * ch + (gr - 1) * gap)) / 2;
+                return;
+            }
+            gc = cols; gr = rows;
+            cw = (PW - 2 * margin - (gc - 1) * gap) / gc;
+            ch = (PH - 2 * margin - (gr - 1) * gap) / gr;
+            ox = margin; oy = margin;
+        }
+
+        // size of the photo area of one cell (without the caption band)
         void CellSize(out double w, out double h)
         {
-            w = (PW - 2 * margin - (cols - 1) * gap) / cols;
-            h = (PH - 2 * margin - (rows - 1) * gap) / rows;
-            if (w < 1) w = 1;
-            if (h < 1) h = 1;
+            int gc, gr; double cw, ch, ox, oy;
+            GridMetrics(out gc, out gr, out cw, out ch, out ox, out oy);
+            w = Math.Max(1, cw);
+            h = Math.Max(1, ch - CapH);
         }
 
         static void EffDims(Photo p, out double ew, out double eh)
@@ -1052,11 +1317,78 @@ namespace PhotoPrintLayout
             return new RectangleF(x, y, pw, ph);
         }
 
+        // photo area of a grid cell (mm on the page)
         RectangleF CellRectMm(int slot)
         {
-            double w, h; CellSize(out w, out h);
-            int c = slot % cols, r = slot / cols;
-            return new RectangleF((float)(margin + c * (w + gap)), (float)(margin + r * (h + gap)), (float)w, (float)h);
+            int gc, gr; double cw, ch, ox, oy;
+            GridMetrics(out gc, out gr, out cw, out ch, out ox, out oy);
+            int c = slot % gc, r = slot / gc;
+            return new RectangleF((float)(ox + c * (cw + gap)), (float)(oy + r * (ch + gap)), (float)Math.Max(1, cw), (float)Math.Max(1, ch - CapH));
+        }
+
+        // whole cell including the caption band
+        RectangleF FullCellRectMm(int slot) { var r = CellRectMm(slot); r.Height += (float)CapH; return r; }
+
+        int PageOf(int i) { return free ? items[i].FPage : i / PerPage; }
+
+        // where photo i lands on its page (mm), clipped to its box
+        RectangleF PhotoRectMm(int i)
+        {
+            var p = items[i];
+            if (free) return RectangleF.Intersect(new RectangleF((float)p.FX, (float)p.FY, (float)p.FW, (float)FH(p)), new RectangleF(0, 0, (float)PW, (float)PH));
+            double W, H; CellSize(out W, out H);
+            var cell = CellRectMm(i % PerPage);
+            var q = GetGeo(p, W, H);
+            float cx = (float)(cell.X + cell.Width / 2 + q.Dx), cy = (float)(cell.Y + cell.Height / 2 + q.Dy);
+            return RectangleF.Intersect(new RectangleF(cx - (float)q.EW / 2, cy - (float)q.EH / 2, (float)q.EW, (float)q.EH), cell);
+        }
+
+        // print resolution of photo i in dots per inch
+        double EffDpi(int i)
+        {
+            var p = items[i];
+            double mmW;   // printed width of the whole (unrotated) image
+            if (free) { double ew, eh; EffDims(p, out ew, out eh); mmW = p.W * (p.FW / ew); }
+            else { double W, H; CellSize(out W, out H); mmW = GetGeo(p, W, H).IW; }
+            return mmW <= 0 ? 0 : p.W / (mmW / 25.4);
+        }
+
+        string CaptionText(Photo p)
+        {
+            if (captionMode == 1) return Path.GetFileNameWithoutExtension(p.Name);
+            if (captionMode == 2) return p.Caption ?? "";
+            return "";
+        }
+
+        // printer's unprintable edge for the current printer, paper and orientation
+        void RefreshHardMargins()
+        {
+            hmL = hmT = hmR = hmB = 0;
+            try
+            {
+                if (string.IsNullOrEmpty(printerName) || paper == null) return;
+                var prs = new PrinterSettings { PrinterName = printerName };
+                if (!prs.IsValid) return;
+                var pg = new PageSettings(prs) { Landscape = landscape };
+                pg.PaperSize = MatchPaper(prs, paper);
+                RectangleF pa = pg.PrintableArea;
+                float bw = (float)(PW / 0.254), bh = (float)(PH / 0.254);
+                if ((pa.Width > pa.Height) != (bw > bh) && Math.Abs(bw - bh) > 1) pa = new RectangleF(pa.Y, pa.X, pa.Height, pa.Width);
+                hmL = Math.Max(0, pa.X * 0.254); hmT = Math.Max(0, pa.Y * 0.254);
+                hmR = Math.Max(0, (bw - pa.X - pa.Width) * 0.254); hmB = Math.Max(0, (bh - pa.Y - pa.Height) * 0.254);
+                if (hmL > 30 || hmT > 30 || hmR > 30 || hmB > 30) hmL = hmT = hmR = hmB = 0;   // nonsense from the driver
+            }
+            catch { hmL = hmT = hmR = hmB = 0; }
+        }
+
+        double MaxHardMargin { get { return Math.Max(Math.Max(hmL, hmR), Math.Max(hmT, hmB)); } }
+
+        void UpdateMarginWarning()
+        {
+            double mx = MaxHardMargin;
+            bool show = mx > 0.05 && margin + 0.01 < mx;
+            if (show) lblMarginWarn.Text = string.Format("This printer can't print the outer {0:0.0} mm of this paper (hatched on the page). Photos closer to the edge will be cut.", mx);
+            if (lblMarginWarn.Visible != show) lblMarginWarn.Visible = show;
         }
 
         RectangleF CellRectPx(int index)
@@ -1123,6 +1455,8 @@ namespace PhotoPrintLayout
 
         void FitZoom()
         {
+            RefreshHardMargins();
+            UpdateMarginWarning();
             float b0 = 96f * dpi / 25.4f;
             float zw = (preview.ClientSize.Width - 2 * Pad - SystemInformation.VerticalScrollBarWidth) / (float)(PW * b0);
             float zh = (preview.ClientSize.Height - 2 * Pad - LabelH) / (float)(PH * b0);
@@ -1165,6 +1499,201 @@ namespace PhotoPrintLayout
             g.Restore(st);
         }
 
+        // Draws one page's photos, cut guides and captions. ox/oy = page origin, u = drawing units per mm.
+        // full = full-resolution images (printing and PDF); otherwise the screen previews are used.
+        void RenderPageContent(Graphics g, int page, float ox, float oy, float u, bool full)
+        {
+            double W, H; CellSize(out W, out H);
+            var idx = new List<int>();
+            for (int i = 0; i < items.Count; i++) if (PageOf(i) == page) idx.Add(i);
+            if (guideMode == 2)
+            {
+                using (var pen = new Pen(Color.Black, full ? 0.2f * u : Math.Max(1f, 0.2f * u)))
+                    foreach (var i in idx) DrawCropMarks(g, pen, PhotoRectMm(i), ox, oy, u);
+            }
+            foreach (var i in idx)
+            {
+                var p = items[i];
+                Image img = p.Preview;
+                LoadResult r = null;
+                if (full)
+                {
+                    int need;
+                    if (free) { double ew, eh; EffDims(p, out ew, out eh); need = (int)Math.Ceiling(Math.Max(p.W, p.H) * (p.FW / ew) / 25.4 * 360); }
+                    else { var q = GetGeo(p, W, H); need = (int)Math.Ceiling(Math.Max(q.IW, q.IH) / 25.4 * 360); }   // ~360 dpi is plenty for inkjet photos
+                    r = LoadPhoto(p, Math.Max(need, 64));
+                    if (r != null) img = r.Bmp;
+                }
+                if (img != null)
+                {
+                    if (free) DrawFree(g, p, img, ox, oy, u);
+                    else
+                    {
+                        var c = CellRectMm(i % PerPage);
+                        DrawPhoto(g, p, img, new RectangleF(ox + c.X * u, oy + c.Y * u, c.Width * u, c.Height * u), W, H, u);
+                    }
+                }
+                if (r != null) r.Bmp.Dispose();
+            }
+            if (guideMode == 1)
+            {
+                using (var pen = new Pen(Color.FromArgb(150, 150, 150), full ? 0.2f * u : Math.Max(1f, 0.25f * u)))
+                    foreach (var i in idx)
+                    {
+                        var p = items[i];
+                        RectangleF c = free ? new RectangleF((float)p.FX, (float)p.FY, (float)p.FW, (float)(FH(p) + CapH)) : FullCellRectMm(i % PerPage);
+                        g.DrawRectangle(pen, ox + c.X * u, oy + c.Y * u, c.Width * u, c.Height * u);
+                    }
+            }
+            if (captionMode != 0)
+            {
+                float em = (float)(captionPt * 0.3528 * u);
+                if (em < 2f && !full) return;   // too small to read on screen
+                using (var font = new Font("Segoe UI", em, FontStyle.Regular, GraphicsUnit.World))
+                using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap })
+                    foreach (var i in idx)
+                    {
+                        var p = items[i];
+                        string t = CaptionText(p);
+                        if (t.Length == 0) continue;
+                        RectangleF c;
+                        if (free) c = new RectangleF((float)p.FX, (float)(p.FY + FH(p)), (float)p.FW, (float)CapH);
+                        else { var cr = CellRectMm(i % PerPage); c = new RectangleF(cr.X, cr.Bottom, cr.Width, (float)CapH); }
+                        g.DrawString(t, font, Brushes.Black, new RectangleF(ox + c.X * u, oy + c.Y * u, c.Width * u, c.Height * u), sf);
+                    }
+            }
+        }
+
+        static LoadResult LoadPhoto(Photo p, int maxSide)
+        {
+            return p.PdfPage >= 0 ? PdfLoader.Load(p.Path, p.PdfPage, maxSide) : Loader.LoadAny(p.Path, maxSide);
+        }
+
+        static int SpecPage(string[] f) { int v; return f.Length >= 14 && int.TryParse(f[13], out v) ? v : -1; }
+
+        static void DrawCropMarks(Graphics g, Pen pen, RectangleF r, float ox, float oy, float u)
+        {
+            float L = 4f * u, o = 1.5f * u;
+            float x1 = ox + r.Left * u, x2 = ox + r.Right * u, y1 = oy + r.Top * u, y2 = oy + r.Bottom * u;
+            g.DrawLine(pen, x1 - o - L, y1, x1 - o, y1); g.DrawLine(pen, x2 + o, y1, x2 + o + L, y1);
+            g.DrawLine(pen, x1 - o - L, y2, x1 - o, y2); g.DrawLine(pen, x2 + o, y2, x2 + o + L, y2);
+            g.DrawLine(pen, x1, y1 - o - L, x1, y1 - o); g.DrawLine(pen, x2, y1 - o - L, x2, y1 - o);
+            g.DrawLine(pen, x1, y2 + o, x1, y2 + o + L); g.DrawLine(pen, x2, y2 + o, x2, y2 + o + L);
+        }
+
+        // hatched band where the printer cannot print
+        void DrawEdgeBand(Graphics g, float ox, float oy, float u)
+        {
+            if (hmL + hmT + hmR + hmB <= 0.01) return;
+            float w = (float)PW * u, h = (float)PH * u;
+            using (var hb = new HatchBrush(HatchStyle.BackwardDiagonal, Color.FromArgb(150, 140, 140, 140), Color.FromArgb(50, 210, 210, 210)))
+            using (var region = new Region(new RectangleF(ox, oy, w, h)))
+            {
+                region.Exclude(new RectangleF(ox + (float)hmL * u, oy + (float)hmT * u, w - (float)(hmL + hmR) * u, h - (float)(hmT + hmB) * u));
+                g.FillRegion(hb, region);
+            }
+        }
+
+        static void SetQuality(Graphics g)
+        {
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.SmoothingMode = SmoothingMode.HighQuality;
+            g.CompositingQuality = CompositingQuality.HighQuality;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        }
+
+        // ---- gap measurements (free layout)
+        public class GapLine { public int Dir; public double Mm; public double X1, Y1, X2, Y2; public bool Edge; }
+
+        // gaps around photo i in mm. Dir 0 = right, 1 = left, 2 = above, 3 = below.
+        // Measured to the nearest photo that overlaps in the other direction, otherwise to the paper edge (Edge = true).
+        List<GapLine> FindGaps(int i)
+        {
+            var res = new List<GapLine>();
+            var p = items[i];
+            double L = p.FX, T = p.FY, R = p.FX + p.FW, B = p.FY + FH(p);
+            for (int dir = 0; dir < 4; dir++)
+            {
+                double best = double.MaxValue;
+                int bj = -1;
+                for (int j = 0; j < items.Count; j++)
+                {
+                    if (j == i || items[j].FPage != p.FPage) continue;
+                    var q = items[j];
+                    double l = q.FX, t = q.FY, r = q.FX + q.FW, b = q.FY + FH(q), ov, d;
+                    if (dir < 2) { ov = Math.Min(B, b) - Math.Max(T, t); d = dir == 0 ? l - R : L - r; }
+                    else { ov = Math.Min(R, r) - Math.Max(L, l); d = dir == 2 ? T - b : t - B; }
+                    if (ov <= 0.01 || d < -0.01) continue;
+                    if (d < best) { best = d; bj = j; }
+                }
+                var g = new GapLine { Dir = dir };
+                if (bj >= 0)
+                {
+                    var q = items[bj];
+                    double l = q.FX, t = q.FY, r = q.FX + q.FW, b = q.FY + FH(q);
+                    g.Mm = Math.Max(0, best);
+                    if (dir < 2) { g.Y1 = g.Y2 = (Math.Max(T, t) + Math.Min(B, b)) / 2; g.X1 = dir == 0 ? R : r; g.X2 = dir == 0 ? l : L; }
+                    else { g.X1 = g.X2 = (Math.Max(L, l) + Math.Min(R, r)) / 2; g.Y1 = dir == 2 ? b : B; g.Y2 = dir == 2 ? T : t; }
+                }
+                else
+                {
+                    g.Edge = true;
+                    double cy = (T + B) / 2, cx = (L + R) / 2;
+                    if (dir == 0) { g.Mm = PW - R; g.X1 = R; g.X2 = PW; g.Y1 = g.Y2 = cy; }
+                    else if (dir == 1) { g.Mm = L; g.X1 = 0; g.X2 = L; g.Y1 = g.Y2 = cy; }
+                    else if (dir == 2) { g.Mm = T; g.Y1 = 0; g.Y2 = T; g.X1 = g.X2 = cx; }
+                    else { g.Mm = PH - B; g.Y1 = B; g.Y2 = PH; g.X1 = g.X2 = cx; }
+                    if (g.Mm < 0.05) continue;
+                }
+                res.Add(g);
+            }
+            return res;
+        }
+
+        void DrawGaps(Graphics g, float k)
+        {
+            if (!free || !showGaps || marquee) return;
+            var who = new List<int>();
+            if (drag == DragMode.Resize) { if (sel != null) who.Add(items.IndexOf(sel)); }
+            else foreach (var sp in selList) who.Add(items.IndexOf(sp));
+            if (who.Count == 0) return;
+            bool single = who.Count == 1;
+            var done = new HashSet<string>();
+            using (var pen = new Pen(Color.FromArgb(225, 29, 72), 1))
+            using (var penEdge = new Pen(Color.FromArgb(170, 225, 29, 72), 1) { DashStyle = DashStyle.Dash })
+            using (var font = new Font("Segoe UI", 8f, FontStyle.Bold))
+            using (var bg = new SolidBrush(Color.FromArgb(225, 29, 72)))
+            using (var bgEdge = new SolidBrush(Color.FromArgb(215, 140, 140, 150)))
+            {
+                foreach (int i in who)
+                {
+                    if (i < 0) continue;
+                    var pr = PageRectPx(items[i].FPage);
+                    foreach (var gl in FindGaps(i))
+                    {
+                        if (gl.Edge && !single) continue;
+                        string key = string.Format(CultureInfo.InvariantCulture, "{0:0.0}|{1:0.0}|{2:0.0}|{3:0.0}|{4}", Math.Min(gl.X1, gl.X2), Math.Min(gl.Y1, gl.Y2), Math.Max(gl.X1, gl.X2), Math.Max(gl.Y1, gl.Y2), items[i].FPage);
+                        if (!done.Add(key)) continue;   // the same gap seen from both photos
+                        float x1 = pr.X + (float)gl.X1 * k, y1 = pr.Y + (float)gl.Y1 * k, x2 = pr.X + (float)gl.X2 * k, y2 = pr.Y + (float)gl.Y2 * k;
+                        bool horiz = gl.Dir < 2;
+                        var pn = gl.Edge ? penEdge : pen;
+                        g.DrawLine(pn, x1, y1, x2, y2);
+                        float tk = D(4);
+                        if (horiz) { g.DrawLine(pen, x1, y1 - tk, x1, y1 + tk); g.DrawLine(pen, x2, y2 - tk, x2, y2 + tk); }
+                        else { g.DrawLine(pen, x1 - tk, y1, x1 + tk, y1); g.DrawLine(pen, x2 - tk, y2, x2 + tk, y2); }
+                        string t = gl.Mm < 0.05 ? "touching" : gl.Mm.ToString("0.0") + " mm";
+                        var sz = g.MeasureString(t, font);
+                        float cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+                        var box = horiz ? new RectangleF(cx - sz.Width / 2 - D(3), cy - sz.Height - D(3), sz.Width + D(6), sz.Height + D(1))
+                                        : new RectangleF(cx + D(5), cy - sz.Height / 2, sz.Width + D(6), sz.Height + D(1));
+                        g.FillRectangle(gl.Edge ? bgEdge : bg, box);
+                        g.DrawString(t, font, Brushes.White, box.X + D(3), box.Y);
+                    }
+                }
+            }
+        }
+
         void DrawSizeLabel(Graphics g, int index, bool showPos)
         {
             var p = items[index];
@@ -1172,7 +1701,7 @@ namespace PhotoPrintLayout
             double wmm, hmm;
             if (free) { wmm = p.FW; hmm = FH(p); }
             else { wmm = vr.Width / Ppm; hmm = vr.Height / Ppm; }   // printed (visible) part
-            string t = string.Format("{0:0.0} × {1:0.0} cm", wmm / 10, hmm / 10);
+            string t = string.Format("{0:0.0} × {1:0.0} cm  ·  {2:0} dpi", wmm / 10, hmm / 10, EffDpi(index));
             if (showPos) t += string.Format("\nfrom edge: {0:0.0} cm left, {1:0.0} cm top", p.FX / 10, p.FY / 10);
             var sz = g.MeasureString(t, Font);
             var box = new RectangleF(vr.X + D(5), vr.Y + D(5), sz.Width + D(8), sz.Height + D(4));
@@ -1193,7 +1722,6 @@ namespace PhotoPrintLayout
             g.PixelOffsetMode = PixelOffsetMode.Half;
             var clip = e.ClipRectangle;
             clip.Offset(-preview.AutoScrollPosition.X, -preview.AutoScrollPosition.Y);
-            double W, H; CellSize(out W, out H);
             int n = PageCount, per = PerPage, nPrint = PrintPageCount;
             float k = Ppm;
             var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
@@ -1203,7 +1731,7 @@ namespace PhotoPrintLayout
             using (var dash = new Pen(Color.FromArgb(197, 203, 214), 1) { DashStyle = DashStyle.Dash })
             using (var guide = new Pen(Color.FromArgb(147, 197, 253), 1) { DashStyle = DashStyle.Dot })
             using (var gridPen = new Pen(Color.FromArgb(228, 233, 242), 1))
-            using (var cutPen = new Pen(Color.FromArgb(156, 163, 175), Math.Max(1f, 0.25f * k)))
+            using (var badgeFont = new Font("Segoe UI", 8f, FontStyle.Bold))
             {
                 for (int p = 0; p < n; p++)
                 {
@@ -1213,6 +1741,9 @@ namespace PhotoPrintLayout
                     g.FillRectangle(Brushes.White, pr);
                     string label = (free && p >= nPrint) ? "Extra page (not printed unless you put a photo on it)" : "Page " + (p + 1) + " of " + nPrint;
                     g.DrawString(label, Font, mutedBrush, new RectangleF(pr.X - D(150), pr.Y - LabelH, pr.Width + D(300), LabelH), center);
+                    var st = g.Save();
+                    g.SetClip(pr, CombineMode.Intersect);
+                    bool any = false;
                     if (free)
                     {
                         if (showGrid)
@@ -1222,35 +1753,37 @@ namespace PhotoPrintLayout
                         }
                         if (margin > 0)
                             g.DrawRectangle(guide, pr.X + (float)margin * k, pr.Y + (float)margin * k, pr.Width - 2 * (float)margin * k, pr.Height - 2 * (float)margin * k);
-                        var st = g.Save();
-                        g.SetClip(pr, CombineMode.Intersect);
-                        bool any = false;
-                        foreach (var ph in items)
-                        {
-                            if (ph.FPage != p) continue;
-                            any = true;
-                            if (ph.Preview != null) DrawFree(g, ph, ph.Preview, pr.X, pr.Y, k);
-                            if (cut) { var r = FreeRectPx(ph); g.DrawRectangle(cutPen, r.X, r.Y, r.Width, r.Height); }
-                        }
-                        g.Restore(st);
-                        if (!any) g.DrawString(items.Count == 0 ? "Double-click or drop photos here" : "Drag a photo here, or double-click to add photos", Font, emptyBrush, pr, center);
-                        continue;
+                        foreach (var ph in items) if (ph.FPage == p) { any = true; break; }
                     }
-                    for (int sl = 0; sl < per; sl++)
+                    else
                     {
-                        int idx = p * per + sl;
-                        var cr = CellRectPx(idx);
-                        if (idx < items.Count)
+                        for (int sl = 0; sl < per; sl++)
                         {
-                            var ph = items[idx];
-                            if (ph.Preview != null) DrawPhoto(g, ph, ph.Preview, cr, W, H, k);
-                            if (cut) g.DrawRectangle(cutPen, cr.X, cr.Y, cr.Width, cr.Height);
-                        }
-                        else
-                        {
+                            int idx = p * per + sl;
+                            if (idx < items.Count) continue;
+                            var cr = CellRectPx(idx);
                             g.DrawRectangle(dash, cr.X + 1, cr.Y + 1, cr.Width - 2, cr.Height - 2);
                             g.DrawString("+ Add photo", Font, emptyBrush, cr, center);
                         }
+                    }
+                    RenderPageContent(g, p, pr.X, pr.Y, k, false);
+                    if (showEdge) DrawEdgeBand(g, pr.X, pr.Y, k);
+                    g.Restore(st);
+                    if (free && !any) g.DrawString(items.Count == 0 ? "Double-click or drop photos here" : "Drag a photo here, or double-click to add photos", Font, emptyBrush, pr, center);
+                    // low-resolution badges (screen only)
+                    for (int i = 0; i < items.Count; i++)
+                    {
+                        if (PageOf(i) != p) continue;
+                        double d = EffDpi(i);
+                        if (d >= 150 || d <= 0) continue;
+                        var r = PhotoRectMm(i);
+                        var vr = new RectangleF(pr.X + r.X * k, pr.Y + r.Y * k, r.Width * k, r.Height * k);
+                        string t = "Low resolution " + Math.Round(d) + " dpi";
+                        var sz = g.MeasureString(t, badgeFont);
+                        var box = new RectangleF(vr.Right - sz.Width - D(10), vr.Top + D(5), sz.Width + D(6), sz.Height + D(2));
+                        if (box.X < vr.X + D(2)) box.X = vr.X + D(2);
+                        using (var b = new SolidBrush(d < 100 ? Color.FromArgb(235, 220, 38, 38) : Color.FromArgb(235, 217, 119, 6))) g.FillRectangle(b, box);
+                        g.DrawString(t, badgeFont, Brushes.White, box.X + D(3), box.Y + D(1));
                     }
                 }
             }
@@ -1298,6 +1831,7 @@ namespace PhotoPrintLayout
                     }
                 }
             }
+            DrawGaps(g, k);
             if (marquee)
             {
                 var r = MarqRect();
@@ -1876,6 +2410,13 @@ namespace PhotoPrintLayout
                         }
                     case "disth":
                         {
+                            if (alignGap > 0 && list.Count >= 2)
+                            {
+                                var so = list.OrderBy(p => p.FX).ToList();
+                                double x0 = so[0].FX;
+                                foreach (var p in so) { p.FX = x0; x0 += p.FW + alignGap; }
+                                break;
+                            }
                             if (list.Count < 2 || (list.Count < 3 && !toPage)) break;
                             var sorted = list.OrderBy(p => p.FX).ToList();
                             double space = (R - L - sorted.Sum(p => p.FW)) / (sorted.Count - 1);
@@ -1885,6 +2426,13 @@ namespace PhotoPrintLayout
                         }
                     case "distv":
                         {
+                            if (alignGap > 0 && list.Count >= 2)
+                            {
+                                var so = list.OrderBy(p => p.FY).ToList();
+                                double y0 = so[0].FY;
+                                foreach (var p in so) { p.FY = y0; y0 += FH(p) + alignGap; }
+                                break;
+                            }
                             if (list.Count < 2 || (list.Count < 3 && !toPage)) break;
                             var sorted = list.OrderBy(p => p.FY).ToList();
                             double space = (B - T - sorted.Sum(p => FH(p))) / (sorted.Count - 1);
@@ -1942,7 +2490,7 @@ namespace PhotoPrintLayout
         // ---- undo / redo
         Snap TakeSnap()
         {
-            var sn = new Snap { Items = items.Select(p => p.Copy()).ToList(), Free = free, Cols = cols, Rows = rows };
+            var sn = new Snap { Items = items.Select(p => p.Copy()).ToList(), Free = free, Cols = cols, Rows = rows, BoxW = boxW, BoxH = boxH };
             sn.SelIdx = selList.Select(p => items.IndexOf(p)).Where(i => i >= 0).ToArray();
             sn.Primary = sel == null ? -1 : items.IndexOf(sel);
             return sn;
@@ -1952,7 +2500,7 @@ namespace PhotoPrintLayout
         {
             items.Clear();
             items.AddRange(sn.Items.Select(p => p.Copy()));
-            free = sn.Free; cols = sn.Cols; rows = sn.Rows;
+            free = sn.Free; cols = sn.Cols; rows = sn.Rows; boxW = sn.BoxW; boxH = sn.BoxH;
             selList.Clear();
             foreach (var i in sn.SelIdx) if (i < items.Count) selList.Add(items[i]);
             sel = sn.Primary >= 0 && sn.Primary < items.Count ? items[sn.Primary] : null;
@@ -2006,13 +2554,14 @@ namespace PhotoPrintLayout
                 {
                     "PhotoPrintLayout\t1",
                     string.Join("\t", new[] { "page", paper != null ? paper.PaperName : "", landscape ? "1" : "0", cols.ToString(ci), rows.ToString(ci),
-                        margin.ToString("R", ci), gap.ToString("R", ci), cut ? "1" : "0", free ? "1" : "0" })
+                        margin.ToString("R", ci), gap.ToString("R", ci), cut ? "1" : "0", free ? "1" : "0",
+                        boxW.ToString("R", ci), boxH.ToString("R", ci), guideMode.ToString(ci), captionMode.ToString(ci), captionPt.ToString("R", ci) })
                 };
                 foreach (var p in items)
                     lines.Add(string.Join("\t", new[] { "photo", p.Path, p.Rot.ToString(ci), p.Fill ? "1" : "0", p.Scale.ToString("R", ci),
                         p.Dx.ToString("R", ci), p.Dy.ToString("R", ci), p.FreeSet ? "1" : "0", p.FPage.ToString(ci),
-                        p.FX.ToString("R", ci), p.FY.ToString("R", ci), p.FW.ToString("R", ci) }));
-                try { File.WriteAllLines(d.FileName, lines); }
+                        p.FX.ToString("R", ci), p.FY.ToString("R", ci), p.FW.ToString("R", ci), p.Caption ?? "", p.PdfPage.ToString(ci) }));
+                try { File.WriteAllLines(d.FileName, lines); AddRecent(recentLayouts, d.FileName); }
                 catch (Exception ex) { MessageBox.Show(this, "Could not save: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
             }
         }
@@ -2051,6 +2600,15 @@ namespace PhotoPrintLayout
                         gap = Clamp(double.Parse(f[6], ci), 0, 50);
                         cut = f[7] == "1";
                         free = f[8] == "1";
+                        guideMode = cut ? 1 : 0;
+                        if (f.Length >= 14)
+                        {
+                            boxW = Clamp(double.Parse(f[9], ci), 0, 1000); boxH = Clamp(double.Parse(f[10], ci), 0, 1000);
+                            guideMode = (int)Clamp(int.Parse(f[11], ci), 0, 2); captionMode = (int)Clamp(int.Parse(f[12], ci), 0, 2);
+                            captionPt = Clamp(double.Parse(f[13], ci), 5, 36);
+                        }
+                        else { boxW = boxH = 0; captionMode = 0; }
+                        cut = guideMode == 1;
                     }
                     else if (f[0] == "photo" && f.Length >= 12) specs.Add(f);
                 }
@@ -2059,25 +2617,28 @@ namespace PhotoPrintLayout
                 sel = null;
                 Cursor = Cursors.WaitCursor;
                 var res = new LoadResult[specs.Count];
-                Parallel.For(0, specs.Count, i => { res[i] = Loader.LoadGdi(specs[i][1], 1600); });
+                Parallel.For(0, specs.Count, i => { if (SpecPage(specs[i]) < 0) res[i] = Loader.LoadGdi(specs[i][1], 1600); });
                 var missing = new List<string>();
                 for (int i = 0; i < specs.Count; i++)
                 {
                     var f = specs[i];
-                    if (res[i] == null) res[i] = Loader.LoadWic(f[1], 1600);
+                    if (res[i] == null) res[i] = SpecPage(f) >= 0 ? PdfLoader.Load(f[1], SpecPage(f), 1600) : Loader.LoadWic(f[1], 1600);
                     if (res[i] == null) { missing.Add(f[1]); continue; }
                     items.Add(new Photo
                     {
                         Path = f[1], Name = Path.GetFileName(f[1]), Preview = res[i].Bmp, W = res[i].FullW, H = res[i].FullH,
                         Rot = int.Parse(f[2], ci), Fill = f[3] == "1", Scale = double.Parse(f[4], ci),
                         Dx = double.Parse(f[5], ci), Dy = double.Parse(f[6], ci), FreeSet = f[7] == "1", FPage = int.Parse(f[8], ci),
-                        FX = double.Parse(f[9], ci), FY = double.Parse(f[10], ci), FW = double.Parse(f[11], ci)
+                        FX = double.Parse(f[9], ci), FY = double.Parse(f[10], ci), FW = double.Parse(f[11], ci),
+                        Caption = f.Length >= 13 ? f[12] : null, PdfPage = SpecPage(f)
                     });
                 }
                 Cursor = Cursors.Default;
                 if (free) CompactFreePages();
                 SyncControls();
                 FitZoom();
+                AddRecent(recentLayouts, Path.GetFullPath(path));
+                WriteTestReport();
                 if (missing.Count > 0)
                     MessageBox.Show(this, "These photos were not found (moved, renamed or deleted):\n\n" + string.Join("\n", missing.Take(15)), Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
@@ -2094,7 +2655,7 @@ namespace PhotoPrintLayout
             using (var d = new OpenFileDialog
             {
                 Multiselect = true, Title = "Add photos",
-                Filter = "Images|*.jpg;*.jpeg;*.jfif;*.png;*.bmp;*.gif;*.tif;*.tiff;*.webp;*.heic;*.heif;*.avif|All files|*.*"
+                Filter = "Photos and PDF|*.jpg;*.jpeg;*.jfif;*.png;*.bmp;*.gif;*.tif;*.tiff;*.webp;*.heic;*.heif;*.avif;*.psd;*.pdf|All files|*.*"
             })
             {
                 if (d.ShowDialog(this) == DialogResult.OK) AddFiles(d.FileNames);
@@ -2124,24 +2685,40 @@ namespace PhotoPrintLayout
             if (list.Count == 0) return;
             PushUndo("");
             Cursor = Cursors.WaitCursor;
-            var res = new LoadResult[list.Count];
-            Parallel.For(0, list.Count, i => { res[i] = Loader.LoadGdi(list[i], 1600); });
+            // PDF files: one picture per page (up to 50 pages)
+            var srcPath = new List<string>();
+            var srcPage = new List<int>();
+            foreach (var fp in list)
+            {
+                if (fp.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+                {
+                    int np0 = PdfLoader.PageCount(fp);
+                    if (np0 <= 0) { srcPath.Add(fp); srcPage.Add(0); continue; }   // reported below as not opened
+                    for (int pg = 0; pg < Math.Min(np0, 50); pg++) { srcPath.Add(fp); srcPage.Add(pg); }
+                }
+                else { srcPath.Add(fp); srcPage.Add(-1); }
+            }
+            var res = new LoadResult[srcPath.Count];
+            Parallel.For(0, srcPath.Count, i => { if (srcPage[i] < 0) res[i] = Loader.LoadGdi(srcPath[i], 1600); });
             var failed = new List<string>();
             var added = new List<Photo>();
-            for (int i = 0; i < list.Count; i++)
+            for (int i = 0; i < srcPath.Count; i++)
             {
-                if (res[i] == null) res[i] = Loader.LoadWic(list[i], 1600);
-                if (res[i] == null) { failed.Add(Path.GetFileName(list[i])); continue; }
-                var np = new Photo { Path = list[i], Name = Path.GetFileName(list[i]), Preview = res[i].Bmp, W = res[i].FullW, H = res[i].FullH };
+                if (res[i] == null) res[i] = srcPage[i] >= 0 ? PdfLoader.Load(srcPath[i], srcPage[i], 1600) : Loader.LoadWic(srcPath[i], 1600);
+                if (res[i] == null) { string nm = Path.GetFileName(srcPath[i]); if (!failed.Contains(nm)) failed.Add(nm); continue; }
+                bool multi = srcPage[i] >= 0 && ((i > 0 && srcPath[i - 1] == srcPath[i]) || (i + 1 < srcPath.Count && srcPath[i + 1] == srcPath[i]));
+                var np = new Photo { Path = srcPath[i], Name = Path.GetFileName(srcPath[i]) + (multi ? " (page " + (srcPage[i] + 1) + ")" : ""), Preview = res[i].Bmp, W = res[i].FullW, H = res[i].FullH, PdfPage = srcPage[i] };
                 items.Add(np);
                 added.Add(np);
+                AddRecent(recentPhotos, np.Path);
             }
             Cursor = Cursors.Default;
             if (free) PackFree(added, false);
             AfterChange();
+            WriteTestReport();
             if (failed.Count > 0)
                 MessageBox.Show(this, "These files could not be opened:\n\n" + string.Join("\n", failed.Take(15)) +
-                    "\n\nFor HEIC photos, install “HEIF Image Extensions” from the Microsoft Store, or convert them to JPG.",
+                    "\n\nFor HEIC photos, install “HEIF Image Extensions” from the Microsoft Store, or convert them to JPG. Password-protected PDFs can't be opened.",
                     Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
@@ -2209,36 +2786,21 @@ namespace PhotoPrintLayout
         PrintDocument MakeDoc()
         {
             var pd = new PrintDocument { DocumentName = "Photo Print Layout" };
-            if (printerName != "") pd.PrinterSettings.PrinterName = printerName;
+            if (printSettings != null && printSettings.PrinterName == printerName) pd.PrinterSettings = (PrinterSettings)printSettings.Clone();
+            else if (printerName != "") pd.PrinterSettings.PrinterName = printerName;
             ApplyPage(pd);
-            pd.BeginPrint += (s, e) => printPage = 0;
+            pd.BeginPrint += (s, e) => printPage = printFrom;
             pd.PrintPage += PrintPageHandler;
             return pd;
         }
 
-        void DoPreview()
-        {
-            if (items.Count == 0) { MessageBox.Show(this, "Add some photos first.", Text); return; }
-            using (var pd = MakeDoc())
-            using (var d = new PrintPreviewDialog { Document = pd, Width = D(900), Height = D(820), StartPosition = FormStartPosition.CenterParent, UseAntiAlias = true })
-            {
-                d.ShowDialog(this);
-            }
-        }
+        void DoPreview() { DoPrint(); }
 
         void DoPrint()
         {
             if (items.Count == 0) { MessageBox.Show(this, "Add some photos first.", Text); return; }
-            using (var pd = MakeDoc())
-            using (var dlg = new PrintDialog { Document = pd, UseEXDialog = true, AllowSomePages = false, AllowSelection = false })
-            {
-                if (dlg.ShowDialog(this) != DialogResult.OK) return;
-                string chosen = pd.PrinterSettings.PrinterName;
-                if (chosen != printerName && cbPrinter.Items.Contains(chosen)) cbPrinter.SelectedItem = chosen;
-                ApplyPage(pd);
-                try { pd.Print(); }
-                catch (Exception ex) { MessageBox.Show(this, "Printing failed:\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
-            }
+            using (var w = new PrintWindow(this)) w.ShowDialog(this);
+            printFrom = 0; printTo = int.MaxValue;
         }
 
         void PrintPageHandler(object sender, PrintPageEventArgs e)
@@ -2248,58 +2810,446 @@ namespace PhotoPrintLayout
             bool isPreview = pd.PrintController != null && pd.PrintController.IsPreview;
             g.PageUnit = GraphicsUnit.Millimeter;
             if (!isPreview) g.TranslateTransform(-e.PageSettings.HardMarginX * 0.254f, -e.PageSettings.HardMarginY * 0.254f);
-            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            g.SmoothingMode = SmoothingMode.HighQuality;
-            g.CompositingQuality = CompositingQuality.HighQuality;
-            double W, H; CellSize(out W, out H);
-            int per = PerPage;
-            if (free) PrintFreePage(g);
-            else for (int sl = 0; sl < per; sl++)
-            {
-                int idx = printPage * per + sl;
-                if (idx >= items.Count) break;
-                var ph = items[idx];
-                var cell = CellRectMm(sl);
-                var q = GetGeo(ph, W, H);
-                int need = (int)Math.Ceiling(Math.Max(q.IW, q.IH) / 25.4 * 360);   // ~360 dpi is plenty for inkjet photos
-                var r = Loader.LoadAny(ph.Path, Math.Max(need, 64));
-                Image img = r != null ? (Image)r.Bmp : ph.Preview;
-                if (img != null) DrawPhoto(g, ph, img, cell, W, H, 1f);
-                if (r != null) r.Bmp.Dispose();
-                if (cut) using (var pen = new Pen(Color.FromArgb(150, 150, 150), 0.2f)) g.DrawRectangle(pen, cell.X, cell.Y, cell.Width, cell.Height);
-            }
+            SetQuality(g);
+            RenderPageContent(g, printPage, 0, 0, 1f, !isPreview);
+            if (isPreview && previewEdge) DrawEdgeBand(g, 0, 0, 1f);
             printPage++;
-            e.HasMorePages = printPage < PrintPageCount;
+            e.HasMorePages = printPage < Math.Min(PrintPageCount, printTo);
         }
 
-        void PrintFreePage(Graphics g)
+        // ---- printer's own settings window (quality, paper type...)
+        [DllImport("winspool.drv", CharSet = CharSet.Unicode)]
+        static extern int DocumentProperties(IntPtr hwnd, IntPtr hPrinter, string pDeviceName, IntPtr pDevModeOutput, IntPtr pDevModeInput, int fMode);
+        [DllImport("kernel32.dll")] static extern IntPtr GlobalLock(IntPtr h);
+        [DllImport("kernel32.dll")] static extern bool GlobalUnlock(IntPtr h);
+        [DllImport("kernel32.dll")] static extern IntPtr GlobalFree(IntPtr h);
+
+        bool ShowPrinterPreferences(IWin32Window owner)
         {
-            foreach (var ph in items)
+            IntPtr outBuf = IntPtr.Zero;
+            try
             {
-                if (ph.FPage != printPage) continue;
-                double ew, eh; EffDims(ph, out ew, out eh);
-                double s = ph.FW / ew;
-                int need = (int)Math.Ceiling(Math.Max(ph.W, ph.H) * s / 25.4 * 360);
-                var r = Loader.LoadAny(ph.Path, Math.Max(need, 64));
-                Image img = r != null ? (Image)r.Bmp : ph.Preview;
-                if (img != null) DrawFree(g, ph, img, 0, 0, 1f);
-                if (r != null) r.Bmp.Dispose();
-                if (cut) using (var pen = new Pen(Color.FromArgb(150, 150, 150), 0.2f)) g.DrawRectangle(pen, (float)ph.FX, (float)ph.FY, (float)ph.FW, (float)FH(ph));
+                var ps = printSettings != null && printSettings.PrinterName == printerName ? printSettings : new PrinterSettings { PrinterName = printerName };
+                var pg = new PageSettings(ps) { Landscape = landscape };
+                if (paper != null) pg.PaperSize = MatchPaper(ps, paper);
+                IntPtr hDev = ps.GetHdevmode(pg);
+                IntPtr pDev = GlobalLock(hDev);
+                int size = DocumentProperties(owner.Handle, IntPtr.Zero, ps.PrinterName, IntPtr.Zero, IntPtr.Zero, 0);
+                if (size <= 0) { GlobalUnlock(hDev); GlobalFree(hDev); return false; }
+                outBuf = Marshal.AllocHGlobal(size);
+                int r = DocumentProperties(owner.Handle, IntPtr.Zero, ps.PrinterName, outBuf, pDev, 2 | 4 | 8);   // out buffer | prompt | in buffer
+                GlobalUnlock(hDev);
+                GlobalFree(hDev);
+                if (r != 1) return false;
+                ps.SetHdevmode(outBuf);
+                pg.SetHdevmode(outBuf);
+                printSettings = ps;
+                // the printer window may have changed paper or orientation: follow it
+                var want = pg.PaperSize;
+                for (int i = 0; i < cbPaper.Items.Count; i++)
+                {
+                    var pi = cbPaper.Items[i] as PaperItem;
+                    if (pi != null && ((want.Kind != PaperKind.Custom && pi.P.Kind == want.Kind) || pi.P.PaperName == want.PaperName))
+                    {
+                        if (cbPaper.SelectedIndex != i) cbPaper.SelectedIndex = i;
+                        break;
+                    }
+                }
+                if (pg.Landscape != landscape) { if (pg.Landscape) rbLand.Checked = true; else rbPort.Checked = true; }
+                return true;
             }
+            catch (Exception ex)
+            {
+                MessageBox.Show(owner, "Could not open the printer settings: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+            finally { if (outBuf != IntPtr.Zero) Marshal.FreeHGlobal(outBuf); }
+        }
+
+        // ---- the Print window: settings on the left, live preview of the real pages on the right
+        class PrintWindow : Form
+        {
+            readonly MainForm F;
+            readonly PrintPreviewControl pv;
+            readonly ComboBox cbPr, cbPa;
+            readonly RadioButton rbP, rbL, rbAll, rbRange;
+            readonly NumericUpDown nCopies, nFrom, nTo;
+            readonly CheckBox chkEdge;
+            readonly Label lblInfo;
+            readonly ToolStripLabel lblPage;
+            PrintDocument pd;
+            bool busy;
+
+            public PrintWindow(MainForm f)
+            {
+                F = f;
+                Text = "Print – Photo Print Layout";
+                Font = f.Font;
+                Icon = f.Icon;
+                StartPosition = FormStartPosition.CenterParent;
+                Size = new Size(f.D(1150), f.D(800));
+                MinimumSize = new Size(f.D(800), f.D(560));
+                ShowInTaskbar = false;
+                MinimizeBox = false;
+                KeyPreview = true;
+
+                var left = new FlowLayoutPanel { Dock = DockStyle.Left, Width = f.D(310), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(f.D(16), f.D(12), f.D(8), f.D(12)), BackColor = Color.White };
+                var bottom = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = f.D(56), ColumnCount = 2, Padding = new Padding(f.D(16), f.D(8), f.D(16), f.D(10)), BackColor = Color.White };
+                bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+                bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+                var bPrint = f.PrimaryButton("Print");
+                bPrint.Dock = DockStyle.Fill; bPrint.Margin = new Padding(0, 0, f.D(6), 0);
+                var bCancel = f.Btn("Cancel", (s, e) => Close());
+                bCancel.Dock = DockStyle.Fill;
+                bottom.Controls.Add(bPrint, 0, 0);
+                bottom.Controls.Add(bCancel, 1, 0);
+                var leftWrap = new Panel { Dock = DockStyle.Left, Width = f.D(310) };
+                leftWrap.Controls.Add(left);
+                leftWrap.Controls.Add(bottom);
+
+                f.AddHeader(left, "PRINTER");
+                cbPr = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, DropDownWidth = f.D(320) };
+                foreach (var it in f.cbPrinter.Items) cbPr.Items.Add(it);
+                cbPr.SelectedItem = f.cbPrinter.SelectedItem;
+                left.Controls.Add(f.Row(32, new float[] { 26, 74 }, f.SmallLabel("Printer"), cbPr));
+                cbPa = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, DropDownWidth = f.D(320) };
+                left.Controls.Add(f.Row(32, new float[] { 26, 74 }, f.SmallLabel("Paper"), cbPa));
+                rbP = f.Toggle("Portrait");
+                rbL = f.Toggle("Landscape");
+                left.Controls.Add(f.Row(32, null, rbP, rbL));
+                var bPrefs = f.Btn("Printer preferences…", (s, e) => { if (F.ShowPrinterPreferences(this)) { SyncFromMain(); Regenerate(); } });
+                f.tips.SetToolTip(bPrefs, "The printer's own settings: print quality, paper type, colour…");
+                left.Controls.Add(f.Row(34, null, bPrefs));
+
+                f.AddHeader(left, "COPIES AND PAGES");
+                nCopies = f.Num(1, 999, 0, 1);
+                nCopies.Value = 1;
+                left.Controls.Add(f.Row(32, new float[] { 60, 40 }, f.SmallLabel("Copies"), nCopies));
+                rbAll = new RadioButton { Text = "All pages", Checked = true, AutoSize = false };
+                rbRange = new RadioButton { Text = "Pages", AutoSize = false };
+                nFrom = f.Num(1, 999, 0, 1);
+                nTo = f.Num(1, 999, 0, 1);
+                var pagesRow = new TableLayoutPanel { ColumnCount = 4, RowCount = 1, Width = f.SideW, Height = f.D(30), Margin = new Padding(0, f.D(2), 0, f.D(2)) };
+                pagesRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30)); pagesRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 28));
+                pagesRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 14)); pagesRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 28));
+                rbRange.Dock = DockStyle.Fill; nFrom.Anchor = AnchorStyles.Left | AnchorStyles.Right; nTo.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+                var lTo = f.CenterLabel("to"); lTo.Dock = DockStyle.Fill;
+                pagesRow.Controls.Add(rbRange, 0, 0); pagesRow.Controls.Add(nFrom, 1, 0); pagesRow.Controls.Add(lTo, 2, 0); pagesRow.Controls.Add(nTo, 3, 0);
+                rbAll.Width = f.SideW; rbAll.Height = f.D(26);
+                left.Controls.Add(rbAll);
+                left.Controls.Add(pagesRow);
+
+                f.AddHeader(left, "PREVIEW");
+                chkEdge = new CheckBox { Text = "Show where the printer can't print", Checked = f.previewEdge, AutoSize = false, Width = f.SideW, Height = f.D(26) };
+                left.Controls.Add(chkEdge);
+                lblInfo = new Label { AutoSize = false, Width = f.SideW, Height = f.D(150), ForeColor = TextCol, UseMnemonic = false };
+                left.Controls.Add(lblInfo);
+
+                // preview side
+                var right = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(233, 237, 243) };
+                var nav = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, BackColor = Color.White, RenderMode = ToolStripRenderMode.System, Padding = new Padding(f.D(8), f.D(3), f.D(8), f.D(3)) };
+                var bPrevPage = new ToolStripButton("◀") { ToolTipText = "Previous page" };
+                lblPage = new ToolStripLabel("Page 1 of 1");
+                var bNextPage = new ToolStripButton("▶") { ToolTipText = "Next page" };
+                var bOne = new ToolStripButton("1 page") { Checked = true };
+                var bTwo = new ToolStripButton("2 pages");
+                nav.Items.AddRange(new ToolStripItem[] { bPrevPage, lblPage, bNextPage, new ToolStripSeparator(), bOne, bTwo });
+                pv = new PrintPreviewControl { Dock = DockStyle.Fill, AutoZoom = true, UseAntiAlias = true, BackColor = Color.FromArgb(233, 237, 243) };
+                right.Controls.Add(pv);
+                right.Controls.Add(nav);
+
+                Controls.Add(right);
+                Controls.Add(new Panel { Dock = DockStyle.Left, Width = 1, BackColor = LineCol });
+                Controls.Add(leftWrap);
+                AcceptButton = bPrint;
+                CancelButton = bCancel;
+
+                bPrevPage.Click += (s, e) => { pv.StartPage = Math.Max(0, pv.StartPage - pv.Columns); UpdatePageLabel(); };
+                bNextPage.Click += (s, e) => { pv.StartPage = Math.Min(Math.Max(0, F.PrintPageCount - 1), pv.StartPage + pv.Columns); UpdatePageLabel(); };
+                bOne.Click += (s, e) => { bOne.Checked = true; bTwo.Checked = false; pv.Columns = 1; UpdatePageLabel(); };
+                bTwo.Click += (s, e) => { bOne.Checked = false; bTwo.Checked = true; pv.Columns = 2; UpdatePageLabel(); };
+                cbPr.SelectedIndexChanged += (s, e) => { if (busy) return; F.cbPrinter.SelectedItem = cbPr.SelectedItem; SyncFromMain(); Regenerate(); };
+                cbPa.SelectedIndexChanged += (s, e) => { if (busy) return; if (cbPa.SelectedIndex >= 0 && cbPa.SelectedIndex < F.cbPaper.Items.Count) F.cbPaper.SelectedIndex = cbPa.SelectedIndex; Regenerate(); };
+                EventHandler orient = (s, e) =>
+                {
+                    if (busy || !((RadioButton)s).Checked) return;
+                    if (rbL.Checked) F.rbLand.Checked = true; else F.rbPort.Checked = true;
+                    Regenerate();
+                };
+                rbP.CheckedChanged += orient;
+                rbL.CheckedChanged += orient;
+                chkEdge.CheckedChanged += (s, e) => { F.previewEdge = chkEdge.Checked; pv.InvalidatePreview(); };
+                nFrom.ValueChanged += (s, e) => { if (!busy) rbRange.Checked = true; };
+                nTo.ValueChanged += (s, e) => { if (!busy) rbRange.Checked = true; };
+                bPrint.Click += (s, e) => DoPrintNow();
+                SyncFromMain();
+                Shown += (s, e) => Regenerate();
+                FormClosed += (s, e) => { if (pd != null) pd.Dispose(); };
+            }
+
+            // copy printer / paper / orientation from the main window into this window's controls
+            void SyncFromMain()
+            {
+                busy = true;
+                if (!Equals(cbPr.SelectedItem, F.cbPrinter.SelectedItem)) cbPr.SelectedItem = F.cbPrinter.SelectedItem;
+                cbPa.Items.Clear();
+                foreach (var it in F.cbPaper.Items) cbPa.Items.Add(it);
+                cbPa.SelectedIndex = F.cbPaper.SelectedIndex;
+                rbP.Checked = !F.landscape;
+                rbL.Checked = F.landscape;
+                busy = false;
+            }
+
+            void Regenerate()
+            {
+                if (pd != null) pd.Dispose();
+                F.printFrom = 0; F.printTo = int.MaxValue;
+                pd = F.MakeDoc();
+                pv.Document = pd;
+                pv.StartPage = Math.Min(pv.StartPage, Math.Max(0, F.PrintPageCount - 1));
+                pv.InvalidatePreview();
+                int n = F.PrintPageCount;
+                busy = true;
+                nFrom.Maximum = n; nTo.Maximum = n;
+                if (nTo.Value > n || !rbRange.Checked) nTo.Value = n;
+                if (nFrom.Value > n) nFrom.Value = 1;
+                busy = false;
+                UpdatePageLabel();
+                // information
+                var ps = pd.DefaultPageSettings;
+                var sb = new StringBuilder();
+                sb.AppendLine(string.Format("{0} page{1} · {2} · {3}", n, n == 1 ? "" : "s", F.paper != null ? new PaperItem(F.paper).ToString() : "?", F.landscape ? "landscape" : "portrait"));
+                sb.AppendLine(string.Format("{0} photo{1}", F.items.Count, F.items.Count == 1 ? "" : "s"));
+                if (F.MaxHardMargin > 0.05)
+                    sb.AppendLine(string.Format("Printer can't print the outer edge: left {0:0.0}, top {1:0.0}, right {2:0.0}, bottom {3:0.0} mm.", F.hmL, F.hmT, F.hmR, F.hmB));
+                int low = 0, veryLow = 0;
+                for (int i = 0; i < F.items.Count; i++) { double d = F.EffDpi(i); if (d < 150) low++; if (d < 100) veryLow++; }
+                if (low > 0) sb.AppendLine(string.Format("Note: {0} photo{1} will print below 150 dpi{2} and may look soft.", low, low == 1 ? "" : "s", veryLow > 0 ? " (" + veryLow + " below 100 dpi)" : ""));
+                lblInfo.Text = sb.ToString();
+            }
+
+            void UpdatePageLabel()
+            {
+                int n = F.PrintPageCount, a = pv.StartPage + 1, b = Math.Min(n, pv.StartPage + pv.Columns);
+                lblPage.Text = a == b ? string.Format("Page {0} of {1}", a, n) : string.Format("Pages {0}–{1} of {2}", a, b, n);
+            }
+
+            void DoPrintNow()
+            {
+                try
+                {
+                    F.printFrom = rbRange.Checked ? (int)nFrom.Value - 1 : 0;
+                    F.printTo = rbRange.Checked ? (int)nTo.Value : int.MaxValue;
+                    if (F.printTo <= F.printFrom) { MessageBox.Show(this, "Please check the page numbers.", Text); return; }
+                    pd.PrinterSettings.Copies = (short)nCopies.Value;
+                    pd.PrinterSettings.Collate = true;
+                    pd.PrintController = new PrintControllerWithStatusDialog(new StandardPrintController(), "Printing");
+                    pd.Print();
+                    DialogResult = DialogResult.OK;
+                    Close();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, "Printing failed:\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                finally { F.printFrom = 0; F.printTo = int.MaxValue; }
+            }
+        }
+
+        // ---- Save as PDF (each page rendered at 300 dpi by the same drawing code as printing)
+        void SaveAsPdf()
+        {
+            if (items.Count == 0) { MessageBox.Show(this, "Add some photos first.", Text); return; }
+            using (var d = new SaveFileDialog { Title = "Save as PDF", Filter = "PDF file (*.pdf)|*.pdf", DefaultExt = "pdf", FileName = "Photo layout" })
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                Cursor = Cursors.WaitCursor;
+                try { WritePdf(d.FileName, 300); }
+                catch (Exception ex) { MessageBox.Show(this, "Could not save the PDF: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                finally { Cursor = Cursors.Default; }
+            }
+        }
+
+        public void WritePdf(string path, int dpiOut)
+        {
+            var jpegs = new List<byte[]>();
+            var px = new List<int[]>();
+            double pw = PW, ph = PH;
+            var jpg = ImageCodecInfo.GetImageEncoders().First(c => c.MimeType == "image/jpeg");
+            using (var ep = new EncoderParameters(1))
+            {
+                ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 92L);
+                for (int page = 0; page < PrintPageCount; page++)
+                {
+                    int wpx = (int)Math.Round(pw / 25.4 * dpiOut), hpx = (int)Math.Round(ph / 25.4 * dpiOut);
+                    using (var bmp = new Bitmap(wpx, hpx, PixelFormat.Format24bppRgb))
+                    {
+                        bmp.SetResolution(dpiOut, dpiOut);
+                        using (var g = Graphics.FromImage(bmp))
+                        {
+                            g.Clear(Color.White);
+                            g.PageUnit = GraphicsUnit.Millimeter;
+                            SetQuality(g);
+                            RenderPageContent(g, page, 0, 0, 1f, true);
+                        }
+                        using (var ms = new MemoryStream()) { bmp.Save(ms, jpg, ep); jpegs.Add(ms.ToArray()); }
+                        px.Add(new[] { wpx, hpx });
+                    }
+                }
+            }
+            PdfWriter.Write(path, jpegs, px, pw * 72 / 25.4, ph * 72 / 25.4);
+        }
+
+        // ---- photo size presets
+        void ApplySizeChoice()
+        {
+            int i = cbSize.SelectedIndex;
+            if (i < 0) return;
+            double w, h;
+            if (i == SizeNames.Length - 1) { w = (double)nBoxW.Value * 10; h = (double)nBoxH.Value * 10; }
+            else { w = SizeMM[i, 0]; h = SizeMM[i, 1]; }
+            PushUndo("");
+            if (free)
+            {
+                if (w > 0)
+                    foreach (var p in Targets())
+                    {
+                        double ew, eh; EffDims(p, out ew, out eh);
+                        double bw = ew >= eh ? Math.Max(w, h) : Math.Min(w, h), bh = ew >= eh ? Math.Min(w, h) : Math.Max(w, h);
+                        p.FW = ew * Math.Min(bw / ew, bh / eh);
+                        ClampFree(p);
+                    }
+            }
+            else
+            {
+                boxW = Math.Max(0, w); boxH = Math.Max(0, h);
+                if (boxW > 0) foreach (var p in items) { p.Fill = true; p.Scale = 1; p.Dx = p.Dy = 0; }
+            }
+            SyncControls();
+            AfterChange();
+        }
+
+        // ---- recent layouts and photos
+        static void AddRecent(List<string> list, string path)
+        {
+            if (string.IsNullOrEmpty(path)) return;
+            list.RemoveAll(x => string.Equals(x, path, StringComparison.OrdinalIgnoreCase));
+            list.Insert(0, path);
+            while (list.Count > 10) list.RemoveAt(list.Count - 1);
+        }
+
+        void FillRecentMenu()
+        {
+            tbRecent.DropDownItems.Clear();
+            var bold = new Font(Font, FontStyle.Bold);
+            tbRecent.DropDownItems.Add(new ToolStripLabel("Layouts") { Font = bold, ForeColor = Muted });
+            if (recentLayouts.Count == 0) tbRecent.DropDownItems.Add(new ToolStripMenuItem("(none yet)") { Enabled = false });
+            foreach (var l in recentLayouts.ToList())
+            {
+                string path = l;
+                var mi = new ToolStripMenuItem(Path.GetFileName(path)) { ToolTipText = path };
+                mi.Click += (s, e) => { if (File.Exists(path)) LoadLayoutFile(path); else { MessageBox.Show(this, "File not found:\n" + path, Text); recentLayouts.Remove(path); } };
+                tbRecent.DropDownItems.Add(mi);
+            }
+            tbRecent.DropDownItems.Add(new ToolStripSeparator());
+            tbRecent.DropDownItems.Add(new ToolStripLabel("Photos (click to add)") { Font = bold, ForeColor = Muted });
+            if (recentPhotos.Count == 0) tbRecent.DropDownItems.Add(new ToolStripMenuItem("(none yet)") { Enabled = false });
+            foreach (var l in recentPhotos.ToList())
+            {
+                string path = l;
+                var mi = new ToolStripMenuItem(Path.GetFileName(path)) { ToolTipText = path };
+                mi.Click += (s, e) => { if (File.Exists(path)) AddFiles(new[] { path }); else { MessageBox.Show(this, "File not found:\n" + path, Text); recentPhotos.Remove(path); } };
+                tbRecent.DropDownItems.Add(mi);
+            }
+            tbRecent.DropDownItems.Add(new ToolStripSeparator());
+            var clear = new ToolStripMenuItem("Clear the list");
+            clear.Click += (s, e) => { recentLayouts.Clear(); recentPhotos.Clear(); };
+            tbRecent.DropDownItems.Add(clear);
+        }
+
+        // ---- files arriving from Explorer (own command line, or other copies started by the right-click menu)
+        public void QueueFiles(IEnumerable<string> files) { foreach (var f in files) incoming.Enqueue(f); }
+
+        void PumpIncoming()
+        {
+            string f;
+            bool got = false;
+            while (incoming.TryDequeue(out f))
+            {
+                got = true;
+                if (f == "\u0001activate") { BringToFrontNow(); continue; }
+                pendingFiles.Add(f);
+            }
+            if (got) lastIncoming = DateTime.Now;
+            if (pendingFiles.Count > 0 && Visible && (DateTime.Now - lastIncoming).TotalMilliseconds > 450)
+            {
+                var list = pendingFiles.ToList();
+                pendingFiles.Clear();
+                BringToFrontNow();
+                AddFiles(list);
+            }
+        }
+
+        void BringToFrontNow()
+        {
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            Activate();
+            BringToFront();
+        }
+
+        // test hook: when PPL_TEST_REPORT is set, list the loaded photos in that file
+        void WriteTestReport()
+        {
+            string p = Environment.GetEnvironmentVariable("PPL_TEST_REPORT");
+            if (string.IsNullOrEmpty(p)) return;
+            try { File.WriteAllLines(p, items.Select(x => x.Path).ToArray()); } catch { }
+        }
+
+        public void StartPipeServer(string name)
+        {
+            var t = new Thread(() =>
+            {
+                while (true)
+                {
+                    try
+                    {
+                        var sec = new PipeSecurity();
+                        sec.AddAccessRule(new PipeAccessRule(WindowsIdentity.GetCurrent().User, PipeAccessRights.ReadWrite, AccessControlType.Allow));
+                        sec.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.NetworkSid, null), PipeAccessRights.FullControl, AccessControlType.Deny));
+                        using (var s = new NamedPipeServerStream(name, PipeDirection.In, NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte, PipeOptions.None, 4096, 4096, sec))
+                        {
+                            s.WaitForConnection();
+                            using (var r = new StreamReader(s, Encoding.UTF8))
+                            {
+                                string l;
+                                while ((l = r.ReadLine()) != null) if (l.Length > 0) incoming.Enqueue(l);
+                            }
+                        }
+                    }
+                    catch { Thread.Sleep(200); }
+                }
+            }) { IsBackground = true, Name = "PhotoPrintLayout pipe" };
+            t.Start();
         }
 
         // ------------------------------------------------------------ settings
-        static string SettingsPath
+        static string SettingsDir
         {
-            get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PhotoPrintLayout", "settings.txt"); }
+            get
+            {
+                string o = Environment.GetEnvironmentVariable("PPL_SETTINGS_DIR");   // tests use their own folder
+                return string.IsNullOrEmpty(o) ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PhotoPrintLayout") : o;
+            }
         }
+        static string SettingsPath { get { return Path.Combine(SettingsDir, "settings.txt"); } }
 
         void LoadSettings()
         {
             try
             {
                 if (!File.Exists(SettingsPath)) return;
+                bool sawGuides = false;
+                var ci = CultureInfo.InvariantCulture;
                 foreach (var line in File.ReadAllLines(SettingsPath))
                 {
                     int k = line.IndexOf('=');
@@ -2315,10 +3265,35 @@ namespace PhotoPrintLayout
                         case "free": free = v == "1"; break;
                         case "cols": if (int.TryParse(v, out iv)) cols = (int)Clamp(iv, 1, 12); break;
                         case "rows": if (int.TryParse(v, out iv)) rows = (int)Clamp(iv, 1, 12); break;
-                        case "margin": if (double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out dv)) margin = Clamp(dv, 0, 50); break;
-                        case "gap": if (double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out dv)) gap = Clamp(dv, 0, 50); break;
+                        case "margin": if (double.TryParse(v, NumberStyles.Float, ci, out dv)) margin = Clamp(dv, 0, 50); break;
+                        case "gap": if (double.TryParse(v, NumberStyles.Float, ci, out dv)) gap = Clamp(dv, 0, 50); break;
+                        case "guides": if (int.TryParse(v, out iv)) { guideMode = (int)Clamp(iv, 0, 2); sawGuides = true; } break;
+                        case "captions": if (int.TryParse(v, out iv)) captionMode = (int)Clamp(iv, 0, 2); break;
+                        case "captionpt": if (double.TryParse(v, NumberStyles.Float, ci, out dv)) captionPt = Clamp(dv, 5, 36); break;
+                        case "showedge": showEdge = v != "0"; break;
+                        case "previewedge": previewEdge = v != "0"; break;
+                        case "box":
+                            {
+                                var b = v.Split('x');
+                                double bw, bh;
+                                if (b.Length == 2 && double.TryParse(b[0], NumberStyles.Float, ci, out bw) && double.TryParse(b[1], NumberStyles.Float, ci, out bh)) { boxW = Clamp(bw, 0, 1000); boxH = Clamp(bh, 0, 1000); }
+                                break;
+                            }
+                        case "win":
+                            {
+                                var b = v.Split(',');
+                                int x, y, w, h;
+                                if (b.Length >= 5 && int.TryParse(b[0], out x) && int.TryParse(b[1], out y) && int.TryParse(b[2], out w) && int.TryParse(b[3], out h)) { savedBounds = new Rectangle(x, y, w, h); savedMax = b[4] == "1"; }
+                                break;
+                            }
+                        case "showgaps": showGaps = v != "0"; break;
+                        case "aligngap": if (double.TryParse(v, NumberStyles.Float, ci, out dv)) alignGap = Clamp(dv, 0, 200); break;
+                        case "recentlayout": if (recentLayouts.Count < 10) recentLayouts.Add(v); break;
+                        case "recentphoto": if (recentPhotos.Count < 10) recentPhotos.Add(v); break;
                     }
                 }
+                if (!sawGuides) guideMode = cut ? 1 : 0;
+                cut = guideMode == 1;
             }
             catch { }
         }
@@ -2327,8 +3302,8 @@ namespace PhotoPrintLayout
         {
             try
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath));
-                File.WriteAllLines(SettingsPath, new[]
+                var ci = CultureInfo.InvariantCulture;
+                var lines = new List<string>
                 {
                     "printer=" + printerName,
                     "paper=" + (paper != null ? paper.PaperName : ""),
@@ -2337,11 +3312,64 @@ namespace PhotoPrintLayout
                     "free=" + (free ? "1" : "0"),
                     "cols=" + cols,
                     "rows=" + rows,
-                    "margin=" + margin.ToString(CultureInfo.InvariantCulture),
-                    "gap=" + gap.ToString(CultureInfo.InvariantCulture)
-                });
+                    "margin=" + margin.ToString(ci),
+                    "gap=" + gap.ToString(ci),
+                    "guides=" + guideMode,
+                    "captions=" + captionMode,
+                    "captionpt=" + captionPt.ToString(ci),
+                    "showedge=" + (showEdge ? "1" : "0"),
+                    "previewedge=" + (previewEdge ? "1" : "0"),
+                    "showgaps=" + (showGaps ? "1" : "0"),
+                    "aligngap=" + alignGap.ToString(ci),
+                    "box=" + boxW.ToString(ci) + "x" + boxH.ToString(ci),
+                    "win=" + savedBounds.X + "," + savedBounds.Y + "," + savedBounds.Width + "," + savedBounds.Height + "," + (savedMax ? "1" : "0")
+                };
+                foreach (var l in recentLayouts) lines.Add("recentlayout=" + l);
+                foreach (var l in recentPhotos) lines.Add("recentphoto=" + l);
+                Directory.CreateDirectory(SettingsDir);
+                string tmp = SettingsPath + ".tmp";
+                File.WriteAllLines(tmp, lines);
+                if (File.Exists(SettingsPath)) File.Replace(tmp, SettingsPath, null); else File.Move(tmp, SettingsPath);
             }
             catch { }
+        }
+    }
+
+    // Minimal PDF writer: one full-page JPEG image per page, page size in points (1/72 inch).
+    static class PdfWriter
+    {
+        public static void Write(string path, List<byte[]> jpegs, List<int[]> px, double wPt, double hPt)
+        {
+            var ci = CultureInfo.InvariantCulture;
+            int n = jpegs.Count, size = 3 + 3 * n;
+            var off = new long[size];
+            using (var fs = new FileStream(path, FileMode.Create, FileAccess.Write))
+            {
+                Action<string> w = t => { var b = Encoding.ASCII.GetBytes(t); fs.Write(b, 0, b.Length); };
+                w("%PDF-1.4\n");
+                fs.Write(new byte[] { 0x25, 0xE2, 0xE3, 0xCF, 0xD3, 0x0A }, 0, 6);
+                off[1] = fs.Position; w("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+                off[2] = fs.Position;
+                w("2 0 obj\n<< /Type /Pages /Kids [" + string.Join(" ", Enumerable.Range(0, n).Select(i => (3 + 3 * i) + " 0 R")) + "] /Count " + n + " >>\nendobj\n");
+                string W = wPt.ToString("0.###", ci), H = hPt.ToString("0.###", ci);
+                for (int i = 0; i < n; i++)
+                {
+                    int po = 3 + 3 * i, co = po + 1, io = po + 2;
+                    off[po] = fs.Position;
+                    w(po + " 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + W + " " + H + "] /Resources << /XObject << /Im0 " + io + " 0 R >> /ProcSet [/PDF /ImageC] >> /Contents " + co + " 0 R >>\nendobj\n");
+                    string content = "q " + W + " 0 0 " + H + " 0 0 cm /Im0 Do Q\n";
+                    off[co] = fs.Position;
+                    w(co + " 0 obj\n<< /Length " + content.Length + " >>\nstream\n" + content + "endstream\nendobj\n");
+                    off[io] = fs.Position;
+                    w(io + " 0 obj\n<< /Type /XObject /Subtype /Image /Width " + px[i][0] + " /Height " + px[i][1] + " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length " + jpegs[i].Length + " >>\nstream\n");
+                    fs.Write(jpegs[i], 0, jpegs[i].Length);
+                    w("\nendstream\nendobj\n");
+                }
+                long xref = fs.Position;
+                w("xref\n0 " + size + "\n0000000000 65535 f \n");
+                for (int i = 1; i < size; i++) w(off[i].ToString("0000000000", ci) + " 00000 n \n");
+                w("trailer\n<< /Size " + size + " /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF\n");
+            }
         }
     }
 
@@ -2354,11 +3382,44 @@ namespace PhotoPrintLayout
         static void Main(string[] args)
         {
             try { SetProcessDPIAware(); } catch { }
+            // One window per user: copies started by Explorer (one per selected file) hand their files to the first copy.
+            string name = "PhotoPrintLayout-" + Environment.UserName + "-" + (Environment.GetEnvironmentVariable("PPL_INSTANCE") ?? "main");
+            foreach (char c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+            bool first;
+            var mutex = new Mutex(true, "Local\\" + name, out first);
+            if (!first && SendToRunning(name, args)) return;
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             var f = new MainForm();
-            if (args.Length > 0) f.Shown += (s, e) => f.AddFiles(args);   // photos or a .photolayout file
+            f.StartPipeServer(name);
+            if (args.Length > 0) f.QueueFiles(args.Select(a => FullPath(a)));
             Application.Run(f);
+            GC.KeepAlive(mutex);
+        }
+
+        static string FullPath(string a) { try { return Path.GetFullPath(a); } catch { return a; } }
+
+        static bool SendToRunning(string name, string[] args)
+        {
+            var lines = args.Length > 0 ? args.Select(a => FullPath(a)).ToList() : new List<string> { "\u0001activate" };
+            for (int i = 0; i < 25; i++)
+            {
+                try
+                {
+                    using (var c = new NamedPipeClientStream(".", name, PipeDirection.Out))
+                    {
+                        c.Connect(400);
+                        using (var w = new StreamWriter(c, new UTF8Encoding(false)))
+                        {
+                            foreach (var l in lines) w.WriteLine(l);
+                            w.Flush();
+                        }
+                        return true;
+                    }
+                }
+                catch { Thread.Sleep(120); }
+            }
+            return false;
         }
     }
 }
