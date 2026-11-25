@@ -13,7 +13,7 @@ From the [Releases](../../releases) page:
 
 > The first time, Windows may show "Windows protected your PC". Click **More info → Run anyway** (this happens with any app that isn't commercially signed).
 
-📘 **User guide:** [Photo-Print-Layout-Guide.pdf](docs/Photo-Print-Layout-Guide.pdf). It was written for version 1.3, so the basics are the same, but in 1.5 **Print** is in the toolbar at the top and opens a Print window with a live preview.
+📘 **User guide:** [Photo-Print-Layout-Guide.pdf](docs/Photo-Print-Layout-Guide.pdf) (version 1.5, 8 pages with screenshots) explains every tool and button.
 
 ⭐ **If this helped you, please give it a star** (the ☆ Star button at the top right of this page). Found a problem or have an idea? [Open an issue](../../issues).
 

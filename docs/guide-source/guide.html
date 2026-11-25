@@ -2,15 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Photo Print Layout — User Guide</title>
+<title>Photo Print Layout 1.5 — User Guide</title>
 <style>
   @page { size: A4; margin: 16mm 16mm 18mm 16mm; }
   :root { --accent:#2563eb; --ink:#1f2937; --muted:#6b7280; --line:#e2e8f0; --soft:#f1f5fb; --badge:#e11d48; }
   * { box-sizing: border-box; }
   body { font-family: "Segoe UI", Arial, sans-serif; color: var(--ink); font-size: 10pt; line-height: 1.45; margin: 0; }
-  h1 { font-size: 26pt; margin: 0 0 4px; color: var(--ink); letter-spacing: -0.5px; }
+  h1 { font-size: 26pt; margin: 0 0 4px; letter-spacing: -0.5px; }
   h2 { font-size: 15pt; color: var(--accent); margin: 18px 0 8px; padding-bottom: 4px; border-bottom: 2px solid var(--line); break-after: avoid; }
-  h3 { font-size: 11.5pt; margin: 14px 0 4px; break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 12px 0 4px; break-after: avoid; }
   p { margin: 5px 0 8px; }
   ul, ol { margin: 4px 0 10px; padding-left: 20px; }
   li { margin: 2px 0; }
@@ -20,28 +20,28 @@
   .meta { color: var(--muted); font-size: 9.5pt; margin-top: 6px; }
   .box { background: var(--soft); border-left: 4px solid var(--accent); padding: 8px 12px; border-radius: 4px; margin: 10px 0; break-inside: avoid; }
   .tip { background: #fff7ed; border-left-color: #f59e0b; }
-  .shot { width: 92%; margin-left: auto !important; margin-right: auto !important; border: 1px solid var(--line); border-radius: 6px; display: block; margin: 8px 0 4px; }
+  .shot { width: 92%; margin: 8px auto 4px; border: 1px solid var(--line); border-radius: 6px; display: block; }
   .cap { color: var(--muted); font-size: 9pt; margin: 0 0 10px; text-align: center; }
   figure { margin: 0; break-inside: avoid; }
   .side { display: flex; gap: 16px; align-items: flex-start; break-inside: avoid; }
-  .side img { width: 62mm; flex: none; border: 1px solid var(--line); border-radius: 6px; }
+  .side img { width: 60mm; flex: none; border: 1px solid var(--line); border-radius: 6px; }
   .side > div { flex: 1; }
-  table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; font-size: 9.8pt; break-inside: auto; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; font-size: 9.8pt; }
   th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { background: var(--soft); font-weight: 600; }
   tr { break-inside: avoid; }
+  table.compact { font-size: 9pt; }
+  table.compact th, table.compact td { padding: 3px 6px; }
+  table.keep, .keep { break-inside: avoid; }
   .n { display: inline-block; width: 19px; height: 19px; border-radius: 50%; background: var(--badge); color: #fff; font-weight: 700; font-size: 8.5pt; text-align: center; line-height: 19px; }
   kbd { font-family: "Segoe UI", Arial, sans-serif; font-size: 8.8pt; background: #fff; border: 1px solid #cbd5e1; border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; white-space: nowrap; }
   .steps { counter-reset: s; list-style: none; padding: 0; }
   .steps li { counter-increment: s; padding-left: 30px; position: relative; margin: 6px 0; }
   .steps li::before { content: counter(s); position: absolute; left: 0; top: 0; width: 21px; height: 21px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700; font-size: 9pt; text-align: center; line-height: 21px; }
-  .pb { break-before: page; }
-  .two { columns: 2; column-gap: 18px; }
-  .two li { break-inside: avoid; }
-  .keep { break-inside: avoid; }
-  table.legend { break-inside: avoid; }
-  table.compact { font-size: 9pt; }
-  table.compact th, table.compact td { padding: 3px 6px; }
+  .two { display: flex; gap: 12px; break-inside: avoid; }
+  .two figure { flex: 1; }
+  .two .shot { width: 100%; }
+  .new { display: inline-block; background: #dcfce7; color: #166534; font-size: 8pt; font-weight: 700; padding: 0 5px; border-radius: 3px; vertical-align: 1px; }
 </style>
 </head>
 <body>
@@ -49,176 +49,183 @@
 <div class="cover">
   <h1>Photo Print Layout</h1>
   <div class="sub">User guide — print several photos on one page, and rotate, size and place each one yourself.</div>
-  <div class="meta">Version 1.3.1 &nbsp;·&nbsp; Free and open source &nbsp;·&nbsp; Windows 10 / 11 &nbsp;·&nbsp; github.com/FaizR-Eng/photo-print-layout</div>
+  <div class="meta">Version 1.5 &nbsp;·&nbsp; Free and open source &nbsp;·&nbsp; Windows 10 / 11 &nbsp;·&nbsp; github.com/FaizR-Eng/photo-print-layout</div>
 </div>
 
 <h2>1. Getting started</h2>
-<p>Download <b>PhotoPrintLayout.exe</b> from the project's <b>Releases</b> page on GitHub and double-click it. There is nothing to install.</p>
+<ol class="steps">
+  <li>Download <b>PhotoPrintLayout-1.5-installer.zip</b> from the project's <b>Releases</b> page on GitHub, unzip it, and double-click <b>Install.cmd</b>. It installs for your user only, so no admin rights are needed. (Or download just <b>PhotoPrintLayout.exe</b> and run it without installing.)</li>
+  <li>Start it from the <b>Start menu</b>, or right-click photos in File Explorer → <b>Show more options</b> → <b>Open in Photo Print Layout</b>.</li>
+</ol>
 <div class="box tip"><b>First start:</b> Windows may show <i>“Windows protected your PC”</i>. Click <b>More info → Run anyway</b>. This happens with apps that are not commercially signed.</div>
 <h3>Quick start</h3>
 <ol class="steps">
-  <li><b>Add photos</b> with the blue button, or drag photos onto the window.</li>
-  <li>Choose your <b>printer</b>, <b>paper size</b> and <b>portrait / landscape</b>.</li>
-  <li>Pick <b>how many photos per page</b> (1 to 20), or <b>0</b> for a free layout.</li>
+  <li><b>Add photos</b> with the toolbar or the blue button, or drag them onto the window.</li>
+  <li>Choose the <b>printer</b>, <b>paper</b> and <b>portrait / landscape</b>.</li>
+  <li>Pick <b>photos per page</b> (1–20), an exact <b>photo size</b> (10×15, passport…), or <b>0</b> for a free layout.</li>
   <li>Adjust each photo: <b>rotate</b>, <b>resize</b>, <b>move</b>.</li>
-  <li>Click <b>Print…</b>. Check the result first with <b>Print preview…</b> if you like.</li>
+  <li>Click <b>Print…</b> at the top right. The Print window shows a live preview of every page.</li>
 </ol>
 
 <h2>2. The window</h2>
 <figure>
-  <img class="shot" src="shots/main-annotated.png" alt="Main window with numbered areas">
+  <img class="shot" src="shots/main-annotated.png" alt="Main window with numbered areas" style="width:84%">
   <p class="cap">The main window in a 4-per-page layout. The numbers are explained below.</p>
 </figure>
-<table class="legend">
-  <tr><th style="width:34px">#</th><th style="width:34%">Area</th><th>What it does</th></tr>
-  <tr><td><span class="n">1</span></td><td>Version · Check for updates</td><td>Shows the version. Click <b>Check for updates</b> to ask GitHub whether a newer version exists.</td></tr>
-  <tr><td><span class="n">2</span></td><td>Add photos, Undo/Redo, Open/Save layout</td><td>Add pictures, undo mistakes, and save a layout to reprint later.</td></tr>
-  <tr><td><span class="n">3</span></td><td>Printer &amp; paper</td><td>Printer, paper size and orientation. The layout uses exactly this paper.</td></tr>
-  <tr><td><span class="n">4</span></td><td>Photos per page</td><td>Grid presets (1–20), <b>0 = free layout</b>, columns × rows, margin, gap, cutting lines.</td></tr>
-  <tr><td><span class="n">5</span></td><td>Selected photo</td><td>Rotate, Fit/Fill, size in % or cm, position, order, duplicate, remove. (Scroll the panel for more sections.)</td></tr>
-  <tr><td><span class="n">6</span></td><td>Page preview</td><td>Shows the pages exactly as they will print. Click and drag photos here.</td></tr>
-  <tr><td><span class="n">7</span></td><td>Selected photo frame</td><td>The blue frame marks the selected photo. Drag the <b>corner square</b> to resize it.</td></tr>
-  <tr><td><span class="n">8</span></td><td>Size label</td><td>Hover over any photo to see its printed size in cm.</td></tr>
-  <tr><td><span class="n">9</span></td><td>Status line</td><td>Number of photos and pages, and the size of each box.</td></tr>
-  <tr><td><span class="n">10</span></td><td>Zoom</td><td><b>−</b> / <b>+</b> zoom the preview; <b>Fit page</b> shows a whole page. Ctrl + mouse wheel over an empty area also zooms.</td></tr>
+<table class="keep">
+  <tr><th style="width:34px">#</th><th style="width:33%">Area</th><th>What it does</th></tr>
+  <tr><td><span class="n">1</span></td><td>Toolbar: files</td><td><b>Add photos</b>, <b>Open / Save layout</b>, <b>Save as PDF</b>, and <b>Recent</b> layouts and photos.</td></tr>
+  <tr><td><span class="n">2</span></td><td>Undo / Redo</td><td>Take back changes, or do them again.</td></tr>
+  <tr><td><span class="n">3</span></td><td>Print preview / Print</td><td>Always visible. Both open the Print window with a live preview (<kbd>Ctrl</kbd>+<kbd>P</kbd>).</td></tr>
+  <tr><td><span class="n">4</span></td><td>Version · Check for updates</td><td>Asks GitHub whether a newer version exists (only when you click).</td></tr>
+  <tr><td><span class="n">5</span></td><td>Printer &amp; paper</td><td>Printer, paper size, portrait / landscape. The layout uses exactly this paper.</td></tr>
+  <tr><td><span class="n">6</span></td><td>Photos per page</td><td>Grid presets 1–20, <b>0 = free layout</b>, and <b>Photo size</b> for exact print sizes.</td></tr>
+  <tr><td><span class="n">7</span></td><td>Page settings</td><td>Margin, gap between photos, cut guides and captions.</td></tr>
+  <tr><td><span class="n">8</span></td><td>Page preview</td><td>Pages as they will print. The <b>hatched band</b> is where your printer can't print.</td></tr>
+  <tr><td><span class="n">9</span></td><td>Selected photo</td><td>Blue frame; drag the <b>corner square</b> to resize. More options in the left panel.</td></tr>
+  <tr><td><span class="n">10</span></td><td>Size label</td><td>Hover over a photo to see its printed size in cm and its resolution (dpi).</td></tr>
+  <tr><td><span class="n">11</span></td><td>Low-resolution warning</td><td>Orange below 150 dpi, red below 100 dpi: the photo may print soft.</td></tr>
+  <tr><td><span class="n">12</span></td><td>Status line</td><td>Number of photos and pages, and the box or photo size.</td></tr>
+  <tr><td><span class="n">13</span></td><td>Zoom</td><td><b>−</b> / <b>+</b> and <b>Fit page</b>. <kbd>Ctrl</kbd> + mouse wheel over an empty area also zooms.</td></tr>
 </table>
 
 <h2>3. Adding photos</h2>
 <ul>
-  <li>Click <b>+ Add photos…</b> (or press <kbd>Ctrl</kbd>+<kbd>O</kbd>) and select one or many files.</li>
-  <li><b>Drag &amp; drop</b> photos, or a whole folder, onto the window.</li>
-  <li><b>Paste</b> a copied picture or copied files with <kbd>Ctrl</kbd>+<kbd>V</kbd>.</li>
-  <li>Click an empty <b>“+ Add photo”</b> box, or in free layout double-click an empty part of a page.</li>
+  <li>Toolbar <b>+ Add photos</b> (<kbd>Ctrl</kbd>+<kbd>O</kbd>), or drag &amp; drop photos or a whole folder onto the window, or paste with <kbd>Ctrl</kbd>+<kbd>V</kbd>.</li>
+  <li><b>From File Explorer:</b> select one or many files → right-click → <b>Show more options</b> → <b>Open in Photo Print Layout</b>, or <b>Send to → Photo Print Layout</b>. Several files open together in <b>one window</b>, and if the app is already open they are added to it.</li>
+  <li><b>PDF files</b> <span class="new">NEW</span>: each page becomes one photo (up to 50 pages). Password-protected PDFs can't be opened.</li>
+  <li>Supported: JPG, PNG, BMP, GIF, TIFF, WebP, PDF. <b>HEIC</b> and <b>PSD</b> work when Windows has an image codec for them (for HEIC: “HEIF Image Extensions” from the Microsoft Store).</li>
 </ul>
-<p>Supported: JPG, PNG, BMP, GIF, TIFF and WebP. For iPhone HEIC photos, install Microsoft's free <b>HEIF Image Extensions</b> from the Microsoft Store, or convert them to JPG first.</p>
 
-<h2>4. Printer &amp; paper</h2>
-<p>Choose the printer and paper size in the app, not only in the Print window: the layout is calculated for this paper. <b>Portrait / Landscape</b> turns the page. Your choices are remembered for next time.</p>
+<h2>4. Photos per page and photo sizes</h2>
+<div class="side">
+  <img src="shots/side-layout.png" alt="Layout settings">
+  <div>
+    <ul>
+      <li><b>Presets 1–20</b> divide the page into equal boxes; <b>Columns × Rows</b> allows any grid.</li>
+      <li><b>Photo size</b> prints every photo at an exact size and fits as many as possible on each page: 9×13, 10×15, 13×18, 15×20, 20×25 cm, 4×6 / 5×7 / 8×10 in, <b>passport 3.5×4.5 cm</b>, 2×2 in, wallet, or <b>Custom size</b>. Photos are set to <i>Fill</i> so they come out exactly that size (switch a photo to <i>Fit</i> to see it whole).</li>
+      <li><b>Page margin</b>: empty border. If it is smaller than your printer's unprintable edge, an orange note warns you.</li>
+      <li><b>Gap between photos</b>: space between the boxes.</li>
+      <li><b>Cut guides</b>: <i>thin cut lines</i> around each box, or <i>crop marks</i> at the corners.</li>
+      <li><b>Captions</b>: the <i>file name</i> or <i>your own text</i> under each photo, with a text size in points.</li>
+    </ul>
+  </div>
+</div>
+<div class="two">
+  <figure><img class="shot" src="shots/sizes-passport.png" alt="Passport photos"><p class="cap">Passport 3.5×4.5 cm: 30 per A4 page, with crop marks.</p></figure>
+  <figure><img class="shot" src="shots/sizes-10x15-captions.png" alt="10x15 with captions"><p class="cap">10×15 cm: 2 per A4 page, with cut lines and file-name captions.</p></figure>
+</div>
 
-<h2>5. Photos per page (grid layouts)</h2>
-<ul>
-  <li><b>Presets 1, 2, 3, 4, 6, 8, 9, 12, 16, 20</b> divide the page into equal boxes. <b>Columns × Rows</b> allows any other grid.</li>
-  <li><b>Page margin</b>: empty border around the page (most printers cannot print the last 3–5 mm).</li>
-  <li><b>Gap between photos</b>: space between the boxes.</li>
-  <li><b>Print thin cutting lines</b>: light grey lines around each box to help cutting.</li>
-</ul>
-<p>More photos than fit on one page automatically continue on the next page.</p>
-
-<h2>6. Working with a photo</h2>
+<h2>5. Working with a photo</h2>
 <div class="side">
   <img src="shots/side-selected.png" alt="Selected photo panel">
   <div>
-    <p><b>Click</b> a photo to select it (blue frame), then use the <b>Selected photo</b> panel, the page, or right-click.</p>
+    <p><b>Click</b> a photo to select it, then use the <b>Selected photo</b> panel, the page, or right-click.</p>
     <ul>
       <li><b>Rotate left / right</b>: 90° at a time. Nothing ever rotates by itself.</li>
-      <li><b>Fit whole photo</b> shows the complete picture (white space may remain). <b>Fill box (crop)</b> fills the box and trims the edges.</li>
-      <li><b>Size</b>: use the slider or %, type an exact <b>W</b> or <b>H</b> in cm, drag the <b>corner square</b>, or use <kbd>Ctrl</kbd> + mouse wheel.</li>
-      <li><b>Move inside its box</b>: drag the photo (for example to push it to a corner, or choose the part shown in Fill mode).</li>
-      <li><b>Swap places</b>: drag a photo onto another box.</li>
-      <li><b>Move earlier / later</b> changes the order. <b>Duplicate</b> makes a copy. <b>Repeat to fill page</b> fills the rest of the page with copies (handy for passport-style photos).</li>
-      <li><b>Reset size &amp; position</b> undoes manual sizing. <b>Remove</b> takes the photo out of the layout (the file is not deleted).</li>
+      <li><b>Fit whole photo</b> shows the complete picture; <b>Fill box (crop)</b> fills the box and trims the edges.</li>
+      <li><b>Size</b>: slider or %, exact <b>W</b> / <b>H</b> in cm, the <b>corner square</b>, or <kbd>Ctrl</kbd> + mouse wheel.</li>
+      <li><b>Move inside its box</b>: drag the photo. <b>Swap places</b>: drag it onto another box.</li>
+      <li><b>Move earlier / later</b> changes the order. <b>Duplicate</b>, <b>Repeat to fill page</b> (e.g. passport photos).</li>
+      <li><b>Caption</b>: your own text (when Captions is set to “My own text”).</li>
+      <li><b>Reset size &amp; position</b>, and <b>Remove</b> (the file itself is not deleted).</li>
     </ul>
   </div>
 </div>
 
 <div class="keep">
-<h2>7. Free layout (“0”)</h2>
+<h2>6. Free layout (“0”)</h2>
 <p>Click <b>0</b> under <i>Photos per page</i> to place photos anywhere, at any size. Photos keep the place they had in the grid, so you can start from e.g. “4 per page” and fine-tune.</p>
-<figure>
-  <img class="shot" src="shots/free-guides.png" alt="Free layout while dragging, with guide lines">
-  <p class="cap">Dragging a photo in free layout: it snaps to the left edge of the photos above, dotted guide lines show the alignment, and the label shows its size and distance from the paper edges.</p>
-</figure>
+<div class="two">
+  <figure><img class="shot" src="shots/free-gaps.png" alt="Gap measurements"><p class="cap"><span class="new">NEW</span> Red labels: gap in mm to the nearest photos. Grey: distance to the paper edges.</p></figure>
+  <figure><img class="shot" src="shots/free-drag.png" alt="Dragging with guides"><p class="cap">While dragging: the photo snaps into line (dotted guides), the gaps update live, and the label shows size and position.</p></figure>
+</div>
 </div>
 <ul>
-  <li><b>Move</b>: drag a photo anywhere, even onto another page. Drag it onto the <b>extra page</b> at the end to start a new page (empty extra pages are not printed).</li>
-  <li><b>Resize</b>: drag the corner square (proportions are always kept), or type <b>W / H</b> in cm.</li>
-  <li><b>Exact position</b>: type <b>X / Y</b> in cm — the distance from the left and top edge of the paper.</li>
-  <li><b>Nudge</b>: arrow keys move the selection 1 mm, <kbd>Shift</kbd> + arrow 1 cm.</li>
-  <li>The <b>dotted blue rectangle</b> shows the page margin (safe print area). It is not printed.</li>
-  <li>Photos may overlap. Right-click → <b>Bring to front / Send to back</b> decides which one is on top.</li>
+  <li><b>Move</b>: drag a photo anywhere, even onto another page; drag it onto the <b>extra page</b> at the end to start a new page.</li>
+  <li><b>Resize</b>: drag the corner square (proportions are kept), or type <b>W / H</b> in cm. <b>Exact position</b>: type <b>X / Y</b> in cm from the paper's left / top edge.</li>
+  <li><b>Gaps</b> <span class="new">NEW</span>: select a photo to see the gap to its neighbours in mm (and to the paper edges when one photo is selected). Turn off with “Show gaps between photos (mm)”.</li>
+  <li><b>Nudge</b>: arrow keys move 1 mm, <kbd>Shift</kbd> + arrow 1 cm. Hold <kbd>Alt</kbd> while dragging to place freely without snapping.</li>
+  <li>The dotted blue rectangle shows the page margin (not printed). Overlapping photos: right-click → <b>Bring to front / Send to back</b>.</li>
 </ul>
 
-<h2>8. Selecting several photos</h2>
-<figure>
-  <img class="shot" src="shots/free-boxselect.png" alt="Box selection">
-  <p class="cap">Dragging a box from an empty spot selects every photo it touches. The panel shows how many are selected.</p>
-</figure>
-<table>
-  <tr><th style="width:38%">How</th><th>Result</th></tr>
-  <tr><td><kbd>Ctrl</kbd> + click</td><td>Add or remove one photo from the selection.</td></tr>
-  <tr><td><kbd>Shift</kbd> + click</td><td>Add a photo to the selection.</td></tr>
-  <tr><td>Drag a box from an empty spot</td><td>Select all photos the box touches (hold <kbd>Ctrl</kbd> to add to the current selection).</td></tr>
-  <tr><td><kbd>Ctrl</kbd>+<kbd>A</kbd> &nbsp;/&nbsp; right-click → Select all photos on this page</td><td>Select everything, or everything on one page.</td></tr>
-</table>
-<p>With several photos selected, <b>rotate, Fit/Fill, size, duplicate and remove apply to all of them</b>. Typing a width in cm gives them all that width. In free layout, dragging one moves them all together and arrow keys nudge them all. The numbers in the panel show the last photo you clicked.</p>
-
-<h2>9. Arrange tools &amp; guide lines (free layout)</h2>
+<h2>7. Selecting several photos and arranging them</h2>
 <div class="side">
   <img src="shots/side-arrange.png" alt="Arrange panel">
   <div>
     <table>
-      <tr><th style="width:42%">Button</th><th>What it does</th></tr>
-      <tr><td><b>Left · Center · Right</b></td><td>Line up the left edges, centers or right edges.</td></tr>
-      <tr><td><b>Top · Middle · Bottom</b></td><td>Line up the top edges, middles or bottom edges.</td></tr>
-      <tr><td><b>Space evenly ↔ / ↕</b></td><td>Make the gaps between photos equal (3 or more photos).</td></tr>
-      <tr><td><b>Same width / height</b></td><td>Match the size of the last photo you clicked.</td></tr>
-      <tr><td><b>Center on page</b></td><td>Move the selection to the middle of the page.</td></tr>
+      <tr><th style="width:42%">How to select</th><th>Result</th></tr>
+      <tr><td><kbd>Ctrl</kbd> + click / <kbd>Shift</kbd> + click</td><td>Add or remove photos.</td></tr>
+      <tr><td>Drag a box from an empty spot</td><td>Selects every photo it touches.</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>A</kbd> · right-click → Select all on this page</td><td>Everything, or one page.</td></tr>
     </table>
-    <ul>
-      <li>Photos are aligned <b>to each other</b>. Tick <b>Align to page margins</b> to align them to the page instead. With one photo selected, alignment always uses the page.</li>
-      <li><b>Snap and show guide lines</b>: while dragging or resizing, photos snap to other photos' edges and centers and to the page margins and center. A thin pink <b>dotted line</b> shows each alignment. Hold <kbd>Alt</kbd> to place freely.</li>
-      <li><b>Show 1 cm grid</b>: a light measuring grid on screen (not printed).</li>
-    </ul>
+    <p>Rotate, size, Fit/Fill, duplicate and remove then apply to <b>all selected photos</b>; in free layout they move together.</p>
+    <table>
+      <tr><th style="width:42%">Arrange (free layout)</th><th>What it does</th></tr>
+      <tr><td><b>Left · Center · Right · Top · Middle · Bottom</b></td><td>Line up edges or centres.</td></tr>
+      <tr><td><b>Space evenly ↔ / ↕</b></td><td>Equal gaps. With an <b>Exact gap</b> in mm <span class="new">NEW</span>, the photos are placed exactly that far apart.</td></tr>
+      <tr><td><b>Same width / height · Center on page</b></td><td>Match the last photo clicked; centre the selection.</td></tr>
+    </table>
+    <p>Tick <b>Align to page margins</b> to align to the page instead of to each other. <b>Show 1 cm grid</b> adds a measuring grid on screen.</p>
   </div>
 </div>
-
-<h2>10. All photos</h2>
-<table>
-  <tr><td style="width:38%"><b>Auto-rotate all</b></td><td>Turns every photo to match the shape of its box (you can still change single photos afterwards).</td></tr>
-  <tr><td><b>Reset rotation</b></td><td>Back to the original orientation.</td></tr>
-  <tr><td><b>All: Fit / All: Fill</b></td><td>Whole photos, or filled boxes, for every photo (grid layouts).</td></tr>
-  <tr><td><b>Reset all sizes</b> / <b>Auto-arrange all</b></td><td>Grid: removes manual sizing. Free layout: places all photos neatly in rows again.</td></tr>
-  <tr><td><b>Clear all</b></td><td>Removes all photos from the layout (asks first; files are not deleted).</td></tr>
-</table>
+<figure>
+  <img class="shot" src="shots/free-boxselect.png" alt="Box selection" style="width:70%">
+  <p class="cap">Dragging a box from an empty spot selects every photo it touches.</p>
+</figure>
 
 <div class="keep">
-<h2>11. Undo, save and open</h2>
+<h2>8. Printing</h2>
+<figure>
+  <img class="shot" src="shots/print-window.png" alt="Print window">
+  <p class="cap">The Print window: settings on the left, the real pages on the right.</p>
+</figure>
+</div>
+<ul>
+  <li><b>Print…</b> (or <kbd>Ctrl</kbd>+<kbd>P</kbd>) opens the Print window. Change <b>printer</b>, <b>paper</b> or <b>portrait / landscape</b> and the preview updates at once.</li>
+  <li><b>Printer preferences…</b> opens your printer's own settings: print quality, paper type (e.g. photo paper), colour.</li>
+  <li><b>Copies</b> and a <b>page range</b>. The info text shows the number of pages, the printer's unprintable edge and any low-resolution photos.</li>
+  <li><b>Save as PDF…</b> in the toolbar saves the pages as a PDF file (300 dpi), without needing a PDF printer.</li>
+</ul>
+<div class="box tip"><b>Tip:</b> do one test print on plain paper and measure a photo with a ruler: a 10×15 cm photo should measure 10×15 cm. If it doesn't, open <b>Printer preferences…</b> and turn off options like “Fit to page”, “Reduce/Enlarge” or borderless “Expansion”.</div>
+
+<h2>9. Undo, save, open and recent</h2>
 <ul>
   <li><b>Undo / Redo</b> (<kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd>) for almost every change.</li>
-  <li><b>Save layout…</b> (<kbd>Ctrl</kbd>+<kbd>S</kbd>) stores the paper, layout and every photo's position in a small <b>.photolayout</b> file. <b>Open layout…</b> brings it back exactly, ready to print again. You can also drop a layout file onto the window.</li>
-  <li>The layout file remembers <i>where</i> your photos are on disk. If you move or rename the photos, the app tells you which ones it can't find.</li>
+  <li><b>Save layout…</b> (<kbd>Ctrl</kbd>+<kbd>S</kbd>) stores paper, layout, sizes, captions and every photo's position in a small <b>.photolayout</b> file. <b>Open layout…</b> brings it back exactly. The file remembers <i>where</i> your photos are; if you move or rename them, the app tells you which are missing.</li>
+  <li><b>Recent</b> lists your last 10 layouts and photos. The app also remembers your printer, paper, margin and window size.</li>
 </ul>
-</div>
 
-<h2>12. Printing</h2>
-<ol class="steps">
-  <li>Click <b>Print preview…</b> to see the pages as the printer will receive them (optional).</li>
-  <li>Click <b>Print…</b> (or <kbd>Ctrl</kbd>+<kbd>P</kbd>). In the Windows Print window choose the number of <b>copies</b>, and use <b>Preferences</b> for print quality and paper type (e.g. photo paper).</li>
-  <li>The paper size always comes from the app, so the printed sizes match the cm shown on screen.</li>
-</ol>
-<div class="box tip"><b>Tip:</b> do one test print on plain paper and measure a photo with a ruler. If the size is slightly off, open the printer's <b>Preferences</b> and turn off options like “Fit to page”, “Reduce/Enlarge” or borderless “Expansion”.</div>
+<h2>10. Install, update and uninstall</h2>
+<table class="compact keep">
+  <tr><td style="width:28%"><b>Install.cmd</b></td><td>Installs for your user (no admin) into <i>%LOCALAPPDATA%\Programs\PhotoPrintLayout</i>, adds the Start menu entry, right-click menu (photos, PDF, PSD), Send to, and an entry in Settings › Apps.</td></tr>
+  <tr><td><b>Update</b></td><td>Run a newer Install.cmd. It updates in place, moves the old files into a <i>previous</i> folder and keeps your settings. Click <b>Check for updates</b> in the app to see if there is a new version.</td></tr>
+  <tr><td><b>Uninstall.cmd</b></td><td>Removes the app, shortcuts, right-click entry and Send to. Your settings and saved layouts stay.</td></tr>
+  <tr><td><b>RightClick-Add / Remove</b></td><td>Add or remove only the right-click and Send to entries.</td></tr>
+</table>
 
-<h2>13. Keyboard shortcuts</h2>
-<table class="compact">
-  <tr><th style="width:30%">Keys</th><th>Action</th><th style="width:30%">Keys</th><th>Action</th></tr>
+<h2>11. Keyboard shortcuts</h2>
+<table class="compact keep">
+  <tr><th style="width:28%">Keys</th><th>Action</th><th style="width:28%">Keys</th><th>Action</th></tr>
   <tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Add photos</td><td><kbd>R</kbd> / <kbd>Shift</kbd>+<kbd>R</kbd></td><td>Rotate right / left</td></tr>
   <tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>Paste photos</td><td><kbd>F</kbd></td><td>Switch Fit / Fill</td></tr>
   <tr><td><kbd>Ctrl</kbd>+<kbd>A</kbd></td><td>Select all</td><td><kbd>+</kbd> / <kbd>−</kbd></td><td>Bigger / smaller</td></tr>
   <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>Undo / Redo</td><td><kbd>Del</kbd></td><td>Remove selected</td></tr>
   <tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>Duplicate</td><td><kbd>←</kbd> <kbd>→</kbd> (grid)</td><td>Move earlier / later</td></tr>
   <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Save layout</td><td>Arrows (free)</td><td>Nudge 1 mm (Shift: 1 cm)</td></tr>
-  <tr><td><kbd>Ctrl</kbd>+<kbd>P</kbd></td><td>Print</td><td><kbd>Esc</kbd></td><td>Clear selection</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>P</kbd></td><td>Print window</td><td><kbd>Esc</kbd></td><td>Clear selection</td></tr>
   <tr><td><kbd>Ctrl</kbd> + wheel</td><td>Resize photo / zoom</td><td><kbd>Alt</kbd> while dragging</td><td>No snapping</td></tr>
 </table>
 
-<h2>14. Questions &amp; problems</h2>
-<table class="compact">
-  <tr><td style="width:38%"><b>“Windows protected your PC”</b></td><td>Click <b>More info → Run anyway</b>. Only needed the first time.</td></tr>
-  <tr><td><b>A photo won't open</b></td><td>HEIC/RAW are not supported by Windows without extensions. Install “HEIF Image Extensions” or save the photo as JPG.</td></tr>
-  <tr><td><b>Printed size is slightly different</b></td><td>Check the printer Preferences for scaling or borderless expansion (see the tip above).</td></tr>
-  <tr><td><b>Edges are cut off</b></td><td>Increase the <b>page margin</b> to 5 mm or more; most printers can't print to the very edge.</td></tr>
-  <tr><td><b>Photo looks blurry</b></td><td>The original picture is too small for the printed size. Print it smaller, or use a higher-resolution file.</td></tr>
-  <tr><td><b>Which version do I have?</b></td><td>It's in the title bar and under the app name. Click <b>Check for updates</b> to compare with the newest version.</td></tr>
+<h2>12. Questions and problems</h2>
+<table class="compact keep">
+  <tr><td style="width:30%"><b>“Windows protected your PC”</b></td><td>Click <b>More info → Run anyway</b>. Only the first time.</td></tr>
+  <tr><td><b>No right-click entry</b></td><td>On Windows 11 it is under <b>Show more options</b> (or <kbd>Shift</kbd>+right-click). Run Install.cmd or RightClick-Add.cmd if it is missing.</td></tr>
+  <tr><td><b>A file won't open</b></td><td>HEIC/PSD need a Windows codec; password-protected PDFs are not supported. Save the picture as JPG.</td></tr>
+  <tr><td><b>Printed size is slightly different</b></td><td>Check <b>Printer preferences</b> for scaling or borderless expansion (see the tip in section 8).</td></tr>
+  <tr><td><b>Edges are cut off</b></td><td>Make the <b>page margin</b> at least as wide as the hatched band.</td></tr>
+  <tr><td><b>Photo looks blurry</b></td><td>It has a low-resolution badge: print it smaller, or use a bigger original.</td></tr>
+  <tr><td><b>Which version do I have?</b></td><td>It is in the title bar. Click <b>Check for updates</b> to compare with the newest.</td></tr>
 </table>
 <p class="meta">Questions or ideas? Open an issue on the project page: github.com/FaizR-Eng/photo-print-layout</p>
 
